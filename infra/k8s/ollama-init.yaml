@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ollama-init-script
+data:
+  entrypoint.sh: |
+    #!/bin/bash
+    set -e
+
+    # 1. Start Ollama in the background
+    echo "🔴 Starting Ollama server..."
+    /bin/ollama serve &
+    PID=$!
+
+    # 2. Wait for Ollama to be ready (Using native CLI instead of curl)
+    echo "🟡 Waiting for Ollama API..."
+    # Loop until 'ollama list' returns exit code 0 (success)
+    until ollama list > /dev/null 2>&1; do
+        sleep 2
+    done
+    echo "🟢 Ollama is up!"
+
+    # 3. Check and Pull Model
+    MODEL_NAME="mistral:7b-instruct-q4_K_M"
+    # We check if the model name appears in the list output
+    if ! ollama list | grep -q "${MODEL_NAME}"; then
+        echo "⚠️ Model ${MODEL_NAME} not found. Pulling now... (This may take a while)"
+        ollama pull ${MODEL_NAME}
+        echo "✅ Model pulled successfully."
+    else
+        echo "✅ Model ${MODEL_NAME} already exists."
+    fi
+
+    # 4. Wait for the background process
+    wait $PID

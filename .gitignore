@@ -9,3 +9,4 @@
 .env
 .env.*
 
+infra/k8s/secrets.yaml

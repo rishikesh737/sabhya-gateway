@@ -1,0 +1,137 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-secrets
+type: Opaque
+stringData:
+  # In a real K8s cluster, use 'data' and base64 encoding.
+  # For 'stringData', K8s handles the encoding for us.
+  API_KEYS: "dev-key-1,dev-key-2"
+  RATE_LIMIT_PER_MIN: "30"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llm-models-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ollama-init-script
+data:
+  entrypoint.sh: |
+    #!/bin/bash
+    set -e
+
+    # 1. Start Ollama in the background
+    echo "🔴 Starting Ollama server..."
+    /bin/ollama serve &
+    PID=$!
+
+    # 2. Wait for Ollama to be ready (Using native CLI instead of curl)
+    echo "🟡 Waiting for Ollama API..."
+    # Loop until 'ollama list' returns exit code 0 (success)
+    until ollama list > /dev/null 2>&1; do
+        sleep 2
+    done
+    echo "🟢 Ollama is up!"
+
+    # 3. Check and Pull Model
+    MODEL_NAME="mistral:7b-instruct-q4_K_M"
+    # We check if the model name appears in the list output
+    if ! ollama list | grep -q "${MODEL_NAME}"; then
+        echo "⚠️ Model ${MODEL_NAME} not found. Pulling now... (This may take a while)"
+        ollama pull ${MODEL_NAME}
+        echo "✅ Model pulled successfully."
+    else
+        echo "✅ Model ${MODEL_NAME} already exists."
+    fi
+
+    # 4. Wait for the background process
+    wait $PID
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: llm-pod
+  labels:
+    app: llm-saas
+spec:
+  # Shared Network Namespace is automatic in a Pod
+  containers:
+    # 1. The Hardened API
+    - name: llm-api
+      image: localhost/llm-api:chat  # Note: Use the tag we just built
+      imagePullPolicy: Never         # Use local image
+      ports:
+        - containerPort: 8000
+          hostPort: 8000             # Maps to localhost:8000
+      env:
+        - name: OLLAMA_HOST
+          value: "localhost"
+      envFrom:
+        - secretRef:
+            name: llm-secrets
+      securityContext:
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+        allowPrivilegeEscalation: false
+      volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+      livenessProbe:
+        httpGet:
+          path: /health/live
+          port: 8000
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      readinessProbe:
+        httpGet:
+          path: /health/ready
+          port: 8000
+        initialDelaySeconds: 5
+        periodSeconds: 10
+
+    # 2. Ollama Backend
+  # ... inside containers list ...
+    - name: ollama
+      image: docker.io/ollama/ollama:latest
+      # OVERRIDE the default command
+      command: ["/bin/bash", "/scripts/entrypoint.sh"]
+      ports:
+        - containerPort: 11434
+      volumeMounts:
+        - name: model-storage
+          mountPath: /root/.ollama
+        # MOUNT the script
+        - name: init-script
+          mountPath: /scripts
+      securityContext:
+        allowPrivilegeEscalation: false   # Volumes Definition
+  
+  volumes:
+    # Ephemeral RAM disk for API temp files
+    - name: tmp-volume
+      emptyDir:
+        medium: Memory
+        sizeLimit: 64Mi
+    # Persistent storage for Models
+    - name: model-storage
+      persistentVolumeClaim:
+        claimName: llm-models-pvc
+
+    - name: init-script
+      configMap:
+        name: ollama-init-script
+        defaultMode: 0755  # Make script executable

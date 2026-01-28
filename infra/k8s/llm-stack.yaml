@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: llm-pod
+  labels:
+    app: llm-saas
+spec:
+  # Shared Network Namespace is automatic in a Pod
+  containers:
+    # 1. The Hardened API
+    - name: llm-api
+      image: localhost/llm-api:chat  # Note: Use the tag we just built
+      imagePullPolicy: Never         # Use local image
+      ports:
+        - containerPort: 8000
+          hostPort: 8000             # Maps to localhost:8000
+      env:
+        - name: OLLAMA_HOST
+          value: "localhost"
+      envFrom:
+        - secretRef:
+            name: llm-secrets
+      securityContext:
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+        allowPrivilegeEscalation: false
+      volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+      livenessProbe:
+        httpGet:
+          path: /health/live
+          port: 8000
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      readinessProbe:
+        httpGet:
+          path: /health/ready
+          port: 8000
+        initialDelaySeconds: 5
+        periodSeconds: 10
+
+    # 2. Ollama Backend
+  # ... inside containers list ...
+    - name: ollama
+      image: docker.io/ollama/ollama:latest
+      # OVERRIDE the default command
+      command: ["/bin/bash", "/scripts/entrypoint.sh"]
+      ports:
+        - containerPort: 11434
+      volumeMounts:
+        - name: model-storage
+          mountPath: /root/.ollama
+        # MOUNT the script
+        - name: init-script
+          mountPath: /scripts
+      securityContext:
+        allowPrivilegeEscalation: false   # Volumes Definition
+  
+  volumes:
+    # Ephemeral RAM disk for API temp files
+    - name: tmp-volume
+      emptyDir:
+        medium: Memory
+        sizeLimit: 64Mi
+    # Persistent storage for Models
+    - name: model-storage
+      persistentVolumeClaim:
+        claimName: llm-models-pvc
+
+    - name: init-script
+      configMap:
+        name: ollama-init-script
+        defaultMode: 0755  # Make script executable
