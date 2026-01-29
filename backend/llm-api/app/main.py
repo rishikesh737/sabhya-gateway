@@ -30,7 +30,7 @@ OLLAMA_BASE_URL = "http://ollama:11434"
 OLLAMA_GENERATE_URL = f"{OLLAMA_BASE_URL}/api/generate"
 OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
 MAX_PROMPT_CHARS = 4000
-ALLOWED_MODELS = {"mistral:7b-instruct-q4_K_M"}
+ALLOWED_MODELS = {"mistral:7b-instruct-q4_K_M", "tinyllama"}
 
 # ---- App Definition (With Metadata) ----
 app = FastAPI(
