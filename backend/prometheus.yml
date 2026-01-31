@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 5s # Aggressive scraping for local demo
+
+scrape_configs:
+  - job_name: 'llm-gateway'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['localhost:8000'] # Sidecar magic: It shares network with API

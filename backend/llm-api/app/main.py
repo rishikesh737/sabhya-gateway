@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import httpx
 import os
@@ -12,6 +12,26 @@ from typing import List
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
+from prometheus_client import (
+    Counter,
+    Histogram,
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+    REGISTRY,
+    PROCESS_COLLECTOR,
+    PLATFORM_COLLECTOR,
+    GC_COLLECTOR,
+)
+
+# ---- CRITICAL STABILITY FIX ----
+# Unregister default collectors to prevent crashes in hardened/read-only containers
+try:
+    REGISTRY.unregister(PROCESS_COLLECTOR)
+    REGISTRY.unregister(PLATFORM_COLLECTOR)
+    REGISTRY.unregister(GC_COLLECTOR)
+except ValueError:
+    pass  # Already unregistered
 
 from app.database import init_db, get_db
 from app.models import AuditLog
@@ -38,8 +58,38 @@ OLLAMA_BASE_URL = "http://ollama:11434"
 OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
 ALLOWED_MODELS = {"mistral:7b-instruct-q4_K_M", "tinyllama"}
 
+# ---- PROMETHEUS METRICS DEFINITION ----
+REQUESTS_TOTAL = Counter(
+    "llm_gateway_http_requests_total",
+    "Total HTTP requests processed",
+    ["method", "endpoint", "status_code"],
+)
+REQUEST_LATENCY = Histogram(
+    "llm_gateway_http_request_duration_seconds",
+    "HTTP request latency in seconds",
+    ["method", "endpoint"],
+    buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0],
+)
+TOKENS_TOTAL = Counter(
+    "llm_gateway_tokens_total",
+    "Total tokens processed (prompt + completion)",
+    ["type", "model"],
+)
+SECURITY_VIOLATIONS = Counter(
+    "llm_gateway_security_violations_total",
+    "Total security policy violations blocked",
+    ["violation_type"],
+)
+PII_DETECTED = Counter(
+    "llm_gateway_pii_detected_total",
+    "Total requests where PII was detected and redacted",
+    ["model"],
+)
+OLLAMA_UP = Gauge(
+    "llm_gateway_ollama_up", "Status of the Ollama inference engine (1=Up, 0=Down)"
+)
+
 # ---- ROBUST TOKENIZER SETUP ----
-# We attempt to load the tokenizer. If internet is down (Air Gap), we fallback to math.
 encoding = None
 try:
     encoding = tiktoken.get_encoding("cl100k_base")
@@ -58,18 +108,15 @@ except Exception:
 
 
 def count_tokens(text: str) -> int:
-    """Estimate token count. Uses tiktoken if available, otherwise heuristic."""
     if encoding:
         try:
             return len(encoding.encode(text))
         except Exception:
             pass
-    # Fallback: Rule of thumb (4 chars ~= 1 token) for English text
     return len(text) // 4 if text else 0
 
 
 def upgrade_db_schema(engine):
-    """Naive migration for dev/demo purposes."""
     with engine.connect() as conn:
         try:
             conn.execute(
@@ -94,31 +141,49 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local LLM Gateway",
     description="Enterprise-grade AI Gateway with strict governance.",
-    version="3.0.1",  # Bumped for Offline Support
+    version="4.1.0",
     lifespan=lifespan,
 )
 
-# ---- State ----
 clients = {}
 semaphore = asyncio.Semaphore(1)
 security_scheme = HTTPBearer()
 
 
-# ---- Helpers ----
 def hash_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:8]
 
 
-# ---- Middleware ----
+# ---- Middleware (METRICS LAYER 1) ----
 @app.middleware("http")
 async def add_request_id_and_audit(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
     request.state.request_id = request_id
     structlog.contextvars.bind_contextvars(request_id=request_id)
 
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
+    start_time = time.time()
+    status_code = 500
+
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception as e:
+        status_code = 500
+        raise e
+    finally:
+        duration = time.time() - start_time
+        try:
+            REQUESTS_TOTAL.labels(
+                method=request.method,
+                endpoint=request.url.path,
+                status_code=str(status_code),
+            ).inc()
+            REQUEST_LATENCY.labels(
+                method=request.method, endpoint=request.url.path
+            ).observe(duration)
+        except Exception as metric_err:
+            log.error("metrics_collection_failed", error=str(metric_err))
 
 
 # ---- Auth ----
@@ -130,19 +195,16 @@ def authenticate(creds: HTTPAuthorizationCredentials = Depends(security_scheme))
 
     now = time.time()
     key_hash = hash_key(key)
-
     hits = clients.get(key_hash, [])
     hits = [t for t in hits if now - t < 60]
     if len(hits) >= RATE_LIMIT:
         log.warning("rate_limit_exceeded", client_id=key_hash)
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
-
     hits.append(now)
     clients[key_hash] = hits
     return {"user_hash": key_hash}
 
 
-# ---- Models ----
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -171,6 +233,13 @@ class LogEntry(BaseModel):
 
 
 # ---- Endpoints ----
+
+
+@app.get("/metrics", tags=["Observability"])
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/health/live", tags=["Health"])
 async def health_live():
     return {"status": "alive"}
@@ -178,17 +247,15 @@ async def health_live():
 
 @app.get("/health/ready", tags=["Health"])
 async def health_ready():
-    """
-    Kubernetes Readiness Probe.
-    """
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             resp = await client.get(OLLAMA_BASE_URL)
             if resp.status_code == 200:
+                OLLAMA_UP.set(1)
                 return {"status": "ready", "component": "ollama"}
     except Exception:
         pass
-
+    OLLAMA_UP.set(0)
     raise HTTPException(status_code=503, detail="Inference engine not ready")
 
 
@@ -221,25 +288,23 @@ async def chat_completions(
     blocked_flag = False
     block_reason = None
 
-    # 1. PII & Secret Scanning
     for m in body.messages:
         if m.role == "user":
             cleaned, found, blocked = scanner.scan_and_redact(m.content)
-
             if blocked:
                 blocked_flag = True
                 block_reason = "secret_key_detected"
+                SECURITY_VIOLATIONS.labels(violation_type="secret_key").inc()
                 break
-
             if found:
                 pii_flag = True
+                PII_DETECTED.labels(model=body.model).inc()
 
-            # 2. Jailbreak Scanning
             if guardrails.scan_for_jailbreaks(cleaned):
                 blocked_flag = True
                 block_reason = "jailbreak_attempt"
+                SECURITY_VIOLATIONS.labels(violation_type="jailbreak").inc()
                 break
-
             clean_messages.append({"role": m.role, "content": cleaned})
         else:
             clean_messages.append({"role": m.role, "content": m.content})
@@ -256,14 +321,11 @@ async def chat_completions(
             log.warning(
                 "security_block", user=auth_ctx["user_hash"], reason=block_reason
             )
-
         else:
-            # 3. Enforce System Prompt
             final_messages = guardrails.enforce_system_prompt(clean_messages)
-
-            # 4. Token Accounting (Prompt)
             prompt_text = "".join([m["content"] for m in final_messages])
             p_tokens = count_tokens(prompt_text)
+            TOKENS_TOTAL.labels(type="prompt", model=body.model).inc(p_tokens)
 
             log.info(
                 "chat_request",
@@ -273,7 +335,6 @@ async def chat_completions(
                 pii_detected=pii_flag,
             )
 
-            # 5. Inference
             async with semaphore:
                 async with httpx.AsyncClient(timeout=60) as client:
                     r = await client.post(
@@ -291,9 +352,8 @@ async def chat_completions(
 
             result = r.json()
             content = result.get("message", {}).get("content", "")
-
-            # 6. Token Accounting (Completion)
             c_tokens = count_tokens(content)
+            TOKENS_TOTAL.labels(type="completion", model=body.model).inc(c_tokens)
 
     except HTTPException as he:
         raise he
@@ -303,7 +363,6 @@ async def chat_completions(
         raise e
     finally:
         latency = (time.time() - start_time) * 1000
-
         audit_entry = AuditLog(
             request_id=request_id,
             user_hash=auth_ctx["user_hash"],
@@ -319,7 +378,6 @@ async def chat_completions(
         )
         db.add(audit_entry)
         db.commit()
-
         log.info(
             "audit_log_persisted",
             request_id=request_id,
