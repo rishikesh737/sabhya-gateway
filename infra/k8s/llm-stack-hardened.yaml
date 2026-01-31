@@ -1,0 +1,131 @@
+# infra/k8s/llm-stack-hardened.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-service
+  labels:
+    app: llm-saas
+spec:
+  selector:
+    app: llm-saas
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-gateway
+  labels:
+    app: llm-saas
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-saas
+  template:
+    metadata:
+      labels:
+        app: llm-saas
+    spec:
+      # Pod Security Context (Shared)
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        # ---------------------------
+        # 1. THE BRAIN (Ollama)
+        # ---------------------------
+        - name: ollama
+          image: docker.io/ollama/ollama:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 11434
+          
+          # SAFETY: Resource Quotas
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "1000m"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+            - name: HOME 
+              value: "/tmp" # Required for read-only FS
+
+          volumeMounts:
+            - name: model-storage
+              mountPath: /root/.ollama
+            - name: tmp-volume
+              mountPath: /tmp
+
+          # SAFETY: Hardened Context
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+        # ---------------------------
+        # 2. THE GATEKEEPER (API)
+        # ---------------------------
+        - name: llm-api
+          image: localhost/llm-api:chat # Use your local build or registry
+          imagePullPolicy: Never        # For local Podman/Kind
+          ports:
+            - containerPort: 8000
+          
+          env:
+            - name: OLLAMA_HOST
+              value: "localhost"
+          envFrom:
+            - secretRef:
+                name: llm-secrets
+
+          # SAFETY: Smart Probes (Uses new main.py logic)
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6 # Give Ollama 30s to load model
+
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: audit-storage
+              mountPath: /app/data
+
+          securityContext:
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+      # ---------------------------
+      # STORAGE
+      # ---------------------------
+      volumes:
+        - name: tmp-volume
+          emptyDir: {}
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: llm-models-pvc
+        - name: audit-storage
+          emptyDir: {} # Ephemeral for demo; use PVC for Prod

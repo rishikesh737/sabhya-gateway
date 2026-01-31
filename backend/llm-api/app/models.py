@@ -1,5 +1,5 @@
 import time
-from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy import Column, Integer, String, Float, Boolean
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -25,3 +25,7 @@ class AuditLog(Base):
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
+
+    # ---- Phase 3.1: Security Events ----
+    pii_detected = Column(Boolean, default=False)
+    request_blocked = Column(Boolean, default=False)

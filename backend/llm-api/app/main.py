@@ -7,7 +7,7 @@ import asyncio
 import hashlib
 import uuid
 import structlog
-import tiktoken  # <--- New Import
+import tiktoken
 from typing import List
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from app.database import init_db, get_db
 from app.models import AuditLog
+from app.security.pii import scanner
+from app.security.guardrails import guardrails
 
 load_dotenv()
 
@@ -36,23 +38,63 @@ OLLAMA_BASE_URL = "http://ollama:11434"
 OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
 ALLOWED_MODELS = {"mistral:7b-instruct-q4_K_M", "tinyllama"}
 
-# Initialize Tokenizer (cl100k_base is used by GPT-4/3.5, good proxy for Mistral)
+# ---- ROBUST TOKENIZER SETUP ----
+# We attempt to load the tokenizer. If internet is down (Air Gap), we fallback to math.
+encoding = None
 try:
     encoding = tiktoken.get_encoding("cl100k_base")
 except Exception:
-    encoding = tiktoken.get_encoding("gpt2")  # Fallback
+    try:
+        log.warning(
+            "tokenizer_download_failed", detail="cl100k_base failed, trying gpt2"
+        )
+        encoding = tiktoken.get_encoding("gpt2")
+    except Exception:
+        log.warning(
+            "tokenizer_offline",
+            detail="Network unreachable. Using heuristic token counting.",
+        )
+        encoding = None
+
+
+def count_tokens(text: str) -> int:
+    """Estimate token count. Uses tiktoken if available, otherwise heuristic."""
+    if encoding:
+        try:
+            return len(encoding.encode(text))
+        except Exception:
+            pass
+    # Fallback: Rule of thumb (4 chars ~= 1 token) for English text
+    return len(text) // 4 if text else 0
+
+
+def upgrade_db_schema(engine):
+    """Naive migration for dev/demo purposes."""
+    with engine.connect() as conn:
+        try:
+            conn.execute(
+                "ALTER TABLE audit_logs ADD COLUMN pii_detected BOOLEAN DEFAULT 0"
+            )
+            conn.execute(
+                "ALTER TABLE audit_logs ADD COLUMN request_blocked BOOLEAN DEFAULT 0"
+            )
+        except Exception:
+            pass
 
 
 # ---- App Lifecycle ----
 async def lifespan(app: FastAPI):
+    from app.database import engine
+
     init_db()
+    upgrade_db_schema(engine)
     yield
 
 
 app = FastAPI(
     title="Local LLM Gateway",
     description="Enterprise-grade AI Gateway with strict governance.",
-    version="2.1.0-beta",  # Bumped for Token Accounting
+    version="3.0.1",  # Bumped for Offline Support
     lifespan=lifespan,
 )
 
@@ -65,14 +107,6 @@ security_scheme = HTTPBearer()
 # ---- Helpers ----
 def hash_key(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:8]
-
-
-def count_tokens(text: str) -> int:
-    """Estimate token count for a string."""
-    try:
-        return len(encoding.encode(text))
-    except Exception:
-        return 0
 
 
 # ---- Middleware ----
@@ -126,10 +160,11 @@ class LogEntry(BaseModel):
     model: str
     status_code: int
     latency_ms: float
-    # New Fields
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    pii_detected: bool = False
+    request_blocked: bool = False
 
     class Config:
         from_attributes = True
@@ -143,7 +178,18 @@ async def health_live():
 
 @app.get("/health/ready", tags=["Health"])
 async def health_ready():
-    return {"status": "ready"}
+    """
+    Kubernetes Readiness Probe.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(OLLAMA_BASE_URL)
+            if resp.status_code == 200:
+                return {"status": "ready", "component": "ollama"}
+    except Exception:
+        pass
+
+    raise HTTPException(status_code=503, detail="Inference engine not ready")
 
 
 @app.get("/v1/audit/logs", response_model=List[LogEntry], tags=["Governance"])
@@ -152,7 +198,6 @@ async def get_audit_logs(
     auth_ctx: dict = Depends(authenticate),
     db: Session = Depends(get_db),
 ):
-    """Fetch the latest audit logs for governance review."""
     logs = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit).all()
     return logs
 
@@ -171,45 +216,87 @@ async def chat_completions(
     if body.model not in ALLOWED_MODELS:
         raise HTTPException(status_code=400, detail="Model not allowed")
 
-    # 1. Calculate Prompt Tokens
-    prompt_text = "".join([m.content for m in body.messages])
-    p_tokens = count_tokens(prompt_text)
+    clean_messages = []
+    pii_flag = False
+    blocked_flag = False
+    block_reason = None
 
-    log.info(
-        "chat_request",
-        user=auth_ctx["user_hash"],
-        model=body.model,
-        prompt_tokens=p_tokens,
-    )
+    # 1. PII & Secret Scanning
+    for m in body.messages:
+        if m.role == "user":
+            cleaned, found, blocked = scanner.scan_and_redact(m.content)
+
+            if blocked:
+                blocked_flag = True
+                block_reason = "secret_key_detected"
+                break
+
+            if found:
+                pii_flag = True
+
+            # 2. Jailbreak Scanning
+            if guardrails.scan_for_jailbreaks(cleaned):
+                blocked_flag = True
+                block_reason = "jailbreak_attempt"
+                break
+
+            clean_messages.append({"role": m.role, "content": cleaned})
+        else:
+            clean_messages.append({"role": m.role, "content": m.content})
 
     status_code = 200
     c_tokens = 0
     content = ""
+    p_tokens = 0
 
     try:
-        async with semaphore:
-            async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post(
-                    OLLAMA_CHAT_URL,
-                    json={
-                        "model": body.model,
-                        "messages": [
-                            {"role": m.role, "content": m.content}
-                            for m in body.messages
-                        ],
-                        "stream": False,
-                    },
-                )
-        if r.status_code != 200:
-            status_code = 502
-            raise HTTPException(status_code=502, detail="Ollama failed")
+        if blocked_flag:
+            status_code = 400
+            content = f"Request rejected: Security violation ({block_reason})."
+            log.warning(
+                "security_block", user=auth_ctx["user_hash"], reason=block_reason
+            )
 
-        result = r.json()
-        content = result.get("message", {}).get("content", "")
+        else:
+            # 3. Enforce System Prompt
+            final_messages = guardrails.enforce_system_prompt(clean_messages)
 
-        # 2. Calculate Completion Tokens
-        c_tokens = count_tokens(content)
+            # 4. Token Accounting (Prompt)
+            prompt_text = "".join([m["content"] for m in final_messages])
+            p_tokens = count_tokens(prompt_text)
 
+            log.info(
+                "chat_request",
+                user=auth_ctx["user_hash"],
+                model=body.model,
+                prompt_tokens=p_tokens,
+                pii_detected=pii_flag,
+            )
+
+            # 5. Inference
+            async with semaphore:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.post(
+                        OLLAMA_CHAT_URL,
+                        json={
+                            "model": body.model,
+                            "messages": final_messages,
+                            "stream": False,
+                        },
+                    )
+
+            if r.status_code != 200:
+                status_code = 502
+                raise HTTPException(status_code=502, detail="Ollama failed")
+
+            result = r.json()
+            content = result.get("message", {}).get("content", "")
+
+            # 6. Token Accounting (Completion)
+            c_tokens = count_tokens(content)
+
+    except HTTPException as he:
+        raise he
     except Exception as e:
         status_code = 500
         log.error("inference_failed", error=str(e))
@@ -217,7 +304,6 @@ async def chat_completions(
     finally:
         latency = (time.time() - start_time) * 1000
 
-        # 3. Save to DB with Token Counts
         audit_entry = AuditLog(
             request_id=request_id,
             user_hash=auth_ctx["user_hash"],
@@ -225,9 +311,11 @@ async def chat_completions(
             endpoint="/v1/chat/completions",
             status_code=status_code,
             latency_ms=latency,
-            prompt_tokens=p_tokens,  # Saved
-            completion_tokens=c_tokens,  # Saved
+            prompt_tokens=p_tokens,
+            completion_tokens=c_tokens,
             total_tokens=p_tokens + c_tokens,
+            pii_detected=pii_flag,
+            request_blocked=blocked_flag,
         )
         db.add(audit_entry)
         db.commit()
@@ -236,8 +324,11 @@ async def chat_completions(
             "audit_log_persisted",
             request_id=request_id,
             latency_ms=latency,
-            total_tokens=p_tokens + c_tokens,
+            blocked=blocked_flag,
         )
+
+    if blocked_flag:
+        raise HTTPException(status_code=400, detail=content)
 
     return {
         "id": request_id,
