@@ -17,6 +17,9 @@ import {
   CheckCircle2,
   Clock,
   ChevronDown,
+  Download,
+  Trash2,
+  BrainCircuit,
 } from "lucide-react";
 
 // ============================================================================
@@ -51,6 +54,19 @@ interface AuditLog {
   pii_detected: boolean;
 }
 
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+  sources?: Source[];
+  thought_process?: string;
+}
+
+interface Source {
+  source: string;
+  chunk_index: number;
+}
+
 type ViewId = "interact" | "knowledge" | "logs" | "settings";
 type ProcessingState = "IDLE" | "PROCESSING" | "COMPLETED" | "ERROR";
 
@@ -79,6 +95,36 @@ export default function SabhyaDashboard() {
   const [responseOutput, setResponseOutput] = useState<string | null>(null);
   const [piiWarning, setPiiWarning] = useState(false);
 
+  // ===== CHAT HISTORY & STREAMING STATE =====
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [streamingText, setStreamingText] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [currentSources, setCurrentSources] = useState<Source[]>([]);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // ===== PERSISTENCE =====
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("sabhya_chat_history_v1");
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            setChatHistory(parsed);
+          }
+        } catch (error) {
+          console.error("Failed to load history:", error);
+        }
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && chatHistory.length > 0) {
+      localStorage.setItem("sabhya_chat_history_v1", JSON.stringify(chatHistory));
+    }
+  }, [chatHistory]);
+
   // ===== KNOWLEDGE BASE STATE =====
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -89,6 +135,7 @@ export default function SabhyaDashboard() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [isLogsLoading, setIsLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState<string | null>(null);
+  const [deletingLogId, setDeletingLogId] = useState<string | null>(null);
 
   // ===== HYDRATION SAFETY (Prevent SSR/Client mismatch) =====
   const [isMounted, setIsMounted] = useState(false);
@@ -124,64 +171,223 @@ export default function SabhyaDashboard() {
     return () => clearInterval(interval);
   }, [fetchLogs]);
 
-  // ===== SUBMIT REQUEST =====
+  // ===== DELETE LOG FUNCTION =====
+  const deleteLog = async (requestId: string) => {
+    if (!confirm("Are you sure you want to delete this log entry?")) return;
+
+    setDeletingLogId(requestId);
+    try {
+      const res = await fetch(`${API_BASE}/v1/audit/logs/${requestId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${API_KEY}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Remove from local state
+      setLogs((prev) => prev.filter((log) => log.request_id !== requestId));
+      toast.success("Log entry deleted");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      toast.error(`Failed to delete: ${message}`);
+    } finally {
+      setDeletingLogId(null);
+    }
+  };
+
+  // ===== DOWNLOAD CSV FUNCTION =====
+  const downloadCSV = () => {
+    if (logs.length === 0) {
+      toast.error("No logs to export");
+      return;
+    }
+
+    // Create CSV content
+    const headers = ["Timestamp", "Request ID", "User Hash", "Model", "Endpoint", "Status", "Latency (ms)", "Tokens", "PII Detected"];
+    const rows = logs.map((log) => [
+      new Date(log.timestamp).toISOString(),
+      log.request_id,
+      log.user_hash,
+      log.model,
+      log.endpoint,
+      log.status_code,
+      log.latency_ms.toFixed(0),
+      log.total_tokens,
+      log.pii_detected ? "Yes" : "No",
+    ]);
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map((row) => row.map((cell) => `"${cell}"`).join(",")),
+    ].join("\n");
+
+    // Create and trigger download
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `sabhya-audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast.success(`Exported ${logs.length} logs to CSV`);
+  };
+
+  // ===== SUBMIT REQUEST WITH STREAMING =====
   const submitRequest = async () => {
     if (!promptInput.trim() || processingState === "PROCESSING") return;
 
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: promptInput,
+      timestamp: Date.now(),
+    };
+
+    // Add user message to history
+    setChatHistory((prev) => [...prev, userMessage]);
     setProcessingState("PROCESSING");
-    setResponseOutput(null);
+    setStreamingText("");
+    setIsStreaming(true);
+    setCurrentSources([]);
     setPiiWarning(false);
 
+    const currentPrompt = promptInput;
+    setPromptInput(""); // Clear input immediately
+
     try {
-      const res = await fetch(`${API_BASE}/v1/chat/completions`, {
+      // Build full conversation for context
+      const fullMessages = [
+        ...chatHistory.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: currentPrompt },
+      ];
+
+      const res = await fetch(`${API_BASE}/v1/chat/completions/stream`, {
         method: "POST",
         headers,
         body: JSON.stringify({
           model: selectedModel,
-          messages: [{ role: "user", content: promptInput }],
+          messages: fullMessages,
         }),
       });
 
-      // Handle specific HTTP error codes with user-friendly messages
       if (!res.ok) {
         const errorMessage = getErrorMessage(res.status, await res.text());
         setProcessingState("ERROR");
         setResponseOutput(`ERROR: ${errorMessage}`);
+        setIsStreaming(false);
         toast.error("Request Failed", { description: errorMessage });
-        setIsConnected(res.status !== 0);
         return;
       }
 
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content || "No response received.";
+      // Process SSE stream
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = "";
 
-      setResponseOutput(content);
-      setProcessingState("COMPLETED");
-      setIsConnected(true);
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-      // Check for PII flag from backend
-      if (data.pii_detected) {
-        setPiiWarning(true);
-        toast.warning("PII Detected", { description: "Sensitive data pattern flagged in request." });
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const data = line.slice(6);
+              if (data === "[DONE]") continue;
+
+              try {
+                const parsed = JSON.parse(data);
+
+                if (parsed.error) {
+                  setProcessingState("ERROR");
+                  setResponseOutput(`ERROR: ${parsed.error}`);
+                  setIsStreaming(false);
+                  toast.error("Request Blocked", { description: parsed.error });
+                  return;
+                }
+
+                if (parsed.token) {
+                  fullContent += parsed.token;
+                  setStreamingText(fullContent);
+                }
+
+                if (parsed.done) {
+                  // Extract thought process if present
+                  let thoughtProcess: string | undefined;
+                  const thoughtMatch = fullContent.match(/<thought>([\s\S]*?)<\/thought>/);
+                  if (thoughtMatch) {
+                    thoughtProcess = thoughtMatch[1].trim();
+                    fullContent = fullContent.replace(/<thought>[\s\S]*?<\/thought>/, "").trim();
+                  }
+
+                  // Strip outer markdown blocks
+                  fullContent = fullContent
+                    .replace(/^```(?:markdown|txt)?\n?/i, "")
+                    .replace(/```$/, "")
+                    .trim();
+
+                  // Handle metadata
+                  let sources = parsed.sources;
+                  if (sources && sources.length > 0) {
+                    setCurrentSources(sources);
+                  } else {
+                    sources = currentSources;
+                  }
+
+                  if (parsed.pii_detected) {
+                    setPiiWarning(true);
+                    toast.warning("PII Detected", { description: "Sensitive data pattern flagged." });
+                  }
+
+                  // Add assistant response to history
+                  const assistantMessage: ChatMessage = {
+                    role: "assistant",
+                    content: fullContent,
+                    thought_process: thoughtProcess,
+                    timestamp: Date.now(),
+                    sources: sources.length > 0 ? sources : undefined,
+                  };
+                  setChatHistory((prev) => [...prev, assistantMessage]);
+
+                  setResponseOutput(fullContent);
+                  setProcessingState("COMPLETED");
+                  setIsStreaming(false);
+                  setIsConnected(true);
+
+                  if (chatContainerRef.current) {
+                    chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+                  }
+
+                  fetchLogs();
+                  return;
+                }
+              } catch {
+                // Skip invalid JSON
+              }
+            }
+          }
+        }
       }
-
-      // Refresh logs after request
-      fetchLogs();
     } catch (err: unknown) {
-      // Network errors (no connection, DNS failure, etc.)
       setProcessingState("ERROR");
-      setResponseOutput("ERROR: CONNECTION FAILED — Backend unreachable. Check network or server status.");
+      setResponseOutput("ERROR: CONNECTION FAILED — Backend unreachable.");
+      setIsStreaming(false);
       setIsConnected(false);
       toast.error("Connection Error", { description: "Could not reach the backend server." });
     }
   };
 
-  // ===== CLEAR OUTPUT =====
+  // ===== CLEAR CHAT =====
   const clearOutput = () => {
     setProcessingState("IDLE");
     setResponseOutput(null);
     setPiiWarning(false);
     setPromptInput("");
+    setChatHistory([]);
+    setStreamingText("");
+    setCurrentSources([]);
   };
 
   // ===== FILE UPLOAD =====
@@ -448,15 +654,188 @@ export default function SabhyaDashboard() {
               )}
             </div>
 
-            {/* Output Zone */}
+            {/* Chat History / Output Zone */}
             <div className="flex-1 flex flex-col gap-2 min-h-0">
-              <label className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">Output Zone</label>
-              <pre
-                className={`flex-1 overflow-auto bg-slate-900 border border-slate-700 px-4 py-3 text-sm whitespace-pre-wrap ${processingState === "ERROR" ? "text-red-400" : "text-slate-300"
-                  }`}
+              <label className="text-[10px] text-slate-500 uppercase tracking-wider font-bold">
+                Conversation {chatHistory.length > 0 && `(${chatHistory.length} messages)`}
+              </label>
+              <div
+                ref={chatContainerRef}
+                className="flex-1 overflow-auto bg-slate-900 border border-slate-700 p-4 space-y-4"
               >
-                {responseOutput || "// Response will appear here after processing completes."}
-              </pre>
+                {chatHistory.length === 0 && !isStreaming && (
+                  <div className="text-slate-500 text-sm italic">
+                    // Conversation will appear here. Send a message to begin.
+                  </div>
+                )}
+
+                {chatHistory.map((msg, idx) => (
+                  <div
+                    key={idx}
+                    className={`flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
+                  >
+                    <div
+                      className={`max-w-[80%] px-4 py-3 text-sm ${msg.role === "user"
+                        ? "bg-cyan-900/50 border border-cyan-700 text-cyan-100"
+                        : "bg-slate-800 border border-slate-700 text-slate-200"
+                        }`}
+                    >
+                      <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1 font-bold">
+                        {msg.role === "user" ? "You" : "Sabhya AI"}
+                      </div>
+
+                      {/* Thought Process Accordion */}
+                      {msg.thought_process && (
+                        <details className="mb-3">
+                          <summary className="cursor-pointer text-xs text-slate-500 hover:text-cyan-400 flex items-center gap-1.5 select-none transition-colors outline-none group">
+                            <BrainCircuit size={12} className="group-hover:text-cyan-400" />
+                            <span className="font-medium tracking-wide">Thinking Process</span>
+                          </summary>
+                          <div className="mt-2 p-3 bg-slate-950/50 border border-slate-700/50 rounded text-xs text-slate-400 font-mono whitespace-pre-wrap leading-relaxed">
+                            {msg.thought_process}
+                          </div>
+                        </details>
+                      )}
+
+                      <div className="whitespace-pre-wrap">{msg.content}</div>
+
+                      {/* Source Citations */}
+                      {msg.sources && msg.sources.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-slate-600">
+                          <div className="text-[10px] text-emerald-400 uppercase tracking-wider font-bold mb-1">
+                            📚 Sources Used
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {[...new Set(msg.sources.map(s => s.source))].map((source, i) => (
+                              <span
+                                key={i}
+                                className="text-[10px] bg-emerald-900/30 border border-emerald-800 px-2 py-0.5 text-emerald-400"
+                              >
+                                {source}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-[9px] text-slate-600">
+                      {new Date(msg.timestamp).toLocaleTimeString()}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Streaming Response */}
+                {/* Streaming Response Area */}
+                {isStreaming && streamingText && (
+                  <div className="flex flex-col gap-2 items-start w-full">
+                    {(() => {
+                      // Check for thought tags (start, content, and optional end)
+                      const thoughtMatch = streamingText.match(/<thought>([\s\S]*?)(?:<\/thought>|$)([\s\S]*)/);
+
+                      if (thoughtMatch) {
+                        const thinkingContent = thoughtMatch[1];
+                        const rawMain = thoughtMatch[2] || "";
+                        const isThinkingDone = streamingText.includes("</thought>");
+
+                        // Strip outer markdown blocks
+                        const mainContent = rawMain
+                          .replace(/^```(?:markdown|txt)?\n?/i, "")
+                          .replace(/```$/, "")
+                          .trim();
+
+                        return (
+                          <div className="max-w-[80%] flex flex-col gap-2">
+                            {/* Live Thinking Process */}
+                            <details className="mb-2" open={!isThinkingDone}>
+                              <summary className={`cursor-pointer text-xs text-slate-500 flex items-center gap-1.5 ${!isThinkingDone ? "animate-pulse text-cyan-400" : ""}`}>
+                                <BrainCircuit size={12} />
+                                <span className="font-medium tracking-wide">
+                                  {isThinkingDone ? "Thinking Process" : "Thinking..."}
+                                </span>
+                              </summary>
+                              <div className="mt-2 p-3 bg-slate-950/50 border border-slate-700/50 rounded text-xs text-slate-400 font-mono whitespace-pre-wrap leading-relaxed">
+                                {thinkingContent}
+                                {!isThinkingDone && (
+                                  <span className="inline-block w-1.5 h-3 bg-cyan-500 animate-pulse ml-1 align-middle"></span>
+                                )}
+                              </div>
+                            </details>
+
+                            {/* Main Content (appears after thinking closes) */}
+                            {(mainContent || isThinkingDone) && (
+                              <div className="px-4 py-3 text-sm bg-slate-800 border border-slate-700 text-slate-200">
+                                <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1 font-bold">
+                                  Sabhya AI
+                                </div>
+                                <div className="whitespace-pre-wrap">
+                                  {mainContent}
+                                  {/* Cursor for main content */}
+                                  <span className="inline-block w-2 h-4 bg-cyan-500 animate-pulse ml-1 align-middle"></span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
+                      // Default: No thought block detected yet (or simple response)
+                      // Strip outer markdown blocks
+                      const displayContent = streamingText
+                        .replace(/^```(?:markdown|txt)?\n?/i, "")
+                        .replace(/```$/, "")
+                        .trim();
+
+                      return (
+                        <div className="max-w-[80%] px-4 py-3 text-sm bg-slate-800 border border-slate-700 text-slate-200">
+                          <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1 font-bold">
+                            Sabhya AI
+                          </div>
+                          <div className="whitespace-pre-wrap">{displayContent}</div>
+                          <span className="inline-block w-2 h-4 bg-cyan-500 animate-pulse ml-1"></span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {/* Typing Indicator */}
+                {isStreaming && !streamingText && (
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <div className="flex gap-1">
+                      <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></div>
+                      <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
+                      <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
+                    </div>
+                    <span className="text-xs">Processing...</span>
+                  </div>
+                )}
+
+                {/* Current Sources (displayed after streaming completes) */}
+                {currentSources.length > 0 && !isStreaming && (
+                  <div className="bg-emerald-950/30 border border-emerald-800 p-3">
+                    <div className="text-[10px] text-emerald-400 uppercase tracking-wider font-bold mb-2">
+                      📚 Knowledge Sources Referenced
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {[...new Set(currentSources.map(s => s.source))].map((source, i) => (
+                        <div
+                          key={i}
+                          className="text-xs bg-emerald-900/50 border border-emerald-700 px-3 py-1 text-emerald-300"
+                        >
+                          {source}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Error Display */}
+                {processingState === "ERROR" && responseOutput && (
+                  <div className="bg-red-950/50 border border-red-800 px-4 py-3 text-sm text-red-400">
+                    {responseOutput}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -472,14 +851,24 @@ export default function SabhyaDashboard() {
                 </h2>
                 <p className="text-[11px] text-slate-500 mt-1">Audit trail — {logs.length} records — Auto-refresh: 30s</p>
               </div>
-              <button
-                onClick={fetchLogs}
-                disabled={isLogsLoading}
-                className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-4 py-2 text-xs font-medium text-slate-300 disabled:opacity-50"
-              >
-                <RefreshCw size={12} className={isLogsLoading ? "animate-spin" : ""} />
-                {isLogsLoading ? "Loading..." : "Refresh"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={downloadCSV}
+                  disabled={logs.length === 0}
+                  className="flex items-center gap-2 bg-cyan-900/50 hover:bg-cyan-800/50 px-4 py-2 text-xs font-medium text-cyan-300 disabled:opacity-50 border border-cyan-700"
+                >
+                  <Download size={12} />
+                  Download CSV
+                </button>
+                <button
+                  onClick={fetchLogs}
+                  disabled={isLogsLoading}
+                  className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-4 py-2 text-xs font-medium text-slate-300 disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={isLogsLoading ? "animate-spin" : ""} />
+                  {isLogsLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -503,18 +892,19 @@ export default function SabhyaDashboard() {
                     <th className="px-4 py-3 text-center text-slate-500 uppercase tracking-wider font-medium">PII</th>
                     <th className="px-4 py-3 text-right text-slate-500 uppercase tracking-wider font-medium">Latency</th>
                     <th className="px-4 py-3 text-right text-slate-500 uppercase tracking-wider font-medium">Tokens</th>
+                    <th className="px-4 py-3 text-center text-slate-500 uppercase tracking-wider font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {isLogsLoading && logs.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-12 text-center text-slate-500">
+                      <td colSpan={8} className="py-12 text-center text-slate-500">
                         Loading audit records...
                       </td>
                     </tr>
                   ) : logs.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-12 text-center text-slate-500">
+                      <td colSpan={8} className="py-12 text-center text-slate-500">
                         No audit records found.
                       </td>
                     </tr>
@@ -540,6 +930,16 @@ export default function SabhyaDashboard() {
                         </td>
                         <td className="px-4 py-2.5 text-right text-slate-400">{log.latency_ms.toFixed(0)}ms</td>
                         <td className="px-4 py-2.5 text-right text-slate-400">{log.total_tokens}</td>
+                        <td className="px-4 py-2.5 text-center">
+                          <button
+                            onClick={() => deleteLog(log.request_id)}
+                            disabled={deletingLogId === log.request_id}
+                            className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-950/50 rounded transition-colors disabled:opacity-50"
+                            title="Delete log entry"
+                          >
+                            <Trash2 size={14} className={deletingLogId === log.request_id ? "animate-pulse" : ""} />
+                          </button>
+                        </td>
                       </tr>
                     ))
                   )}

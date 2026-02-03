@@ -28,6 +28,7 @@ class LocalRAGService:
         # Track uploaded files for context injection
         self.uploaded_files: List[str] = []
         self.last_uploaded_filename: Optional[str] = None
+        self._last_sources: List[dict] = []  # Store sources from last query
         
         # Robust initialization with detailed error logging
         try:
@@ -58,6 +59,15 @@ class LocalRAGService:
         context_note = ""
         is_meta = self._is_meta_query(query_text)
         
+        # SKIP RAG for simple greetings or very short queries
+        # This prevents "Hello" from retrieving irrelevant resume context
+        query_lower = query_text.lower().strip()
+        greetings = ["hello", "hi", "hey", "greetings", "good morning", "good evening", "good afternoon"]
+        if (query_lower in greetings) or (len(query_text.split()) < 2 and not is_meta):
+            log.info("rag_skipped_greeting", query=query_text)
+            self._last_sources = []
+            return [], ""
+        
         log.info("rag_query_start", query=query_text[:50], is_meta_query=is_meta)
         
         try:
@@ -83,6 +93,7 @@ class LocalRAGService:
             
             raw_documents = results["documents"][0] if results["documents"] else []
             distances = results["distances"][0] if results.get("distances") else []
+            metadatas = results["metadatas"][0] if results.get("metadatas") else []
             
             # DEBUG LOGGING - Critical for troubleshooting
             log.info("rag_retrieval_debug", 
@@ -91,19 +102,23 @@ class LocalRAGService:
                      distances=distances[:3] if distances else [],
                      is_meta_query=is_meta)
             
-            # AGGRESSIVE RETRIEVAL:
             # For meta-questions, return ALL retrieved chunks (don't filter by distance)
-            # For specific queries, only filter out very poor matches (distance > 0.8)
+            # For specific queries, only filter out poor matches (distance > 0.5)
             if is_meta:
                 # Meta-question: Force return all chunks found
                 documents = raw_documents
+                sources = metadatas
                 log.info("rag_meta_query_force_return", chunks_returned=len(documents))
             else:
-                # Specific query: Only filter very poor matches
-                documents = [
-                    doc for doc, dist in zip(raw_documents, distances)
-                    if dist < 0.8  # Very permissive threshold
-                ] if distances else raw_documents
+                # Specific query: Only return actually relevant matches
+                # Cosine distance: 0 = identical, 1 = orthogonal, 2 = opposite
+                # Using 0.5 threshold to ensure semantic relevance
+                filtered = [
+                    (doc, meta, dist) for doc, meta, dist in zip(raw_documents, metadatas, distances)
+                    if dist < 0.5  # Stricter threshold for relevance
+                ] if distances else [(doc, meta, 0) for doc, meta in zip(raw_documents, metadatas)]
+                documents = [x[0] for x in filtered]
+                sources = [x[1] for x in filtered]
             
             # Build context note with filename info
             if self.last_uploaded_filename:
@@ -115,6 +130,9 @@ class LocalRAGService:
             log.info("rag_query_complete", 
                      docs_returned=len(documents), 
                      has_context_note=bool(context_note))
+            
+            # Store sources for retrieval
+            self._last_sources = sources
             
             return documents, context_note
             
@@ -164,6 +182,10 @@ class LocalRAGService:
     def get_uploaded_files(self) -> List[str]:
         """Return list of all uploaded filenames."""
         return self.uploaded_files.copy()
+    
+    def get_last_sources(self) -> List[dict]:
+        """Return source metadata from the last query for citations."""
+        return self._last_sources.copy()
 
 
 rag_service = LocalRAGService()
