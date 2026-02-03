@@ -1,408 +1,299 @@
-from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks, Response
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import httpx
-import os
-import time
-import asyncio
-import hashlib
-import uuid
-import structlog
-import tiktoken
-from typing import List
-from pydantic import BaseModel
-from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from prometheus_client import (
-    Counter,
-    Histogram,
-    Gauge,
-    generate_latest,
-    CONTENT_TYPE_LATEST,
-    REGISTRY,
-    PROCESS_COLLECTOR,
-    PLATFORM_COLLECTOR,
-    GC_COLLECTOR,
-)
+from pydantic import BaseModel
+from typing import Optional
+import os
+import re
+import time
+import uuid
+import hashlib
+import requests
+import structlog
 
-# ---- CRITICAL STABILITY FIX ----
-# Unregister default collectors to prevent crashes in hardened/read-only containers
-try:
-    REGISTRY.unregister(PROCESS_COLLECTOR)
-    REGISTRY.unregister(PLATFORM_COLLECTOR)
-    REGISTRY.unregister(GC_COLLECTOR)
-except ValueError:
-    pass  # Already unregistered
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-from app.database import init_db, get_db
+from app.services.rag import rag_service
+from app.database import get_db, init_db
 from app.models import AuditLog
-from app.security.pii import scanner
-from app.security.guardrails import guardrails
 
-load_dotenv()
-
-# ---- Logging Setup ----
-structlog.configure(
-    processors=[
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ],
-    context_class=dict,
-    logger_factory=structlog.PrintLoggerFactory(),
-)
+# Setup Logging
 log = structlog.get_logger()
 
-# ---- Config ----
-API_KEYS = set(filter(None, os.getenv("API_KEYS", "").split(",")))
-RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "30"))
-OLLAMA_BASE_URL = "http://ollama:11434"
-OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
-ALLOWED_MODELS = {"mistral:7b-instruct-q4_K_M", "tinyllama"}
+# --- 🔐 Security ---
+security = HTTPBearer()
+API_KEYS = os.getenv("API_KEYS", "").split(",")
 
-# ---- PROMETHEUS METRICS DEFINITION ----
-REQUESTS_TOTAL = Counter(
-    "llm_gateway_http_requests_total",
-    "Total HTTP requests processed",
-    ["method", "endpoint", "status_code"],
-)
-REQUEST_LATENCY = Histogram(
-    "llm_gateway_http_request_duration_seconds",
-    "HTTP request latency in seconds",
-    ["method", "endpoint"],
-    buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0],
-)
-TOKENS_TOTAL = Counter(
-    "llm_gateway_tokens_total",
-    "Total tokens processed (prompt + completion)",
-    ["type", "model"],
-)
-SECURITY_VIOLATIONS = Counter(
-    "llm_gateway_security_violations_total",
-    "Total security policy violations blocked",
-    ["violation_type"],
-)
-PII_DETECTED = Counter(
-    "llm_gateway_pii_detected_total",
-    "Total requests where PII was detected and redacted",
-    ["model"],
-)
-OLLAMA_UP = Gauge(
-    "llm_gateway_ollama_up", "Status of the Ollama inference engine (1=Up, 0=Down)"
-)
-
-# ---- ROBUST TOKENIZER SETUP ----
-encoding = None
-try:
-    encoding = tiktoken.get_encoding("cl100k_base")
-except Exception:
-    try:
-        log.warning(
-            "tokenizer_download_failed", detail="cl100k_base failed, trying gpt2"
-        )
-        encoding = tiktoken.get_encoding("gpt2")
-    except Exception:
-        log.warning(
-            "tokenizer_offline",
-            detail="Network unreachable. Using heuristic token counting.",
-        )
-        encoding = None
-
-
-def count_tokens(text: str) -> int:
-    if encoding:
-        try:
-            return len(encoding.encode(text))
-        except Exception:
-            pass
-    return len(text) // 4 if text else 0
-
-
-def upgrade_db_schema(engine):
-    with engine.connect() as conn:
-        try:
-            conn.execute(
-                "ALTER TABLE audit_logs ADD COLUMN pii_detected BOOLEAN DEFAULT 0"
-            )
-            conn.execute(
-                "ALTER TABLE audit_logs ADD COLUMN request_blocked BOOLEAN DEFAULT 0"
-            )
-        except Exception:
-            pass
-
-
-# ---- App Lifecycle ----
-async def lifespan(app: FastAPI):
-    from app.database import engine
-
-    init_db()
-    upgrade_db_schema(engine)
-    yield
-
-
-app = FastAPI(
-    title="Local LLM Gateway",
-    description="Enterprise-grade AI Gateway with strict governance.",
-    version="4.1.0",
-    lifespan=lifespan,
-)
-
-clients = {}
-semaphore = asyncio.Semaphore(1)
-security_scheme = HTTPBearer()
-
+def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if credentials.credentials not in API_KEYS:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    return credentials.credentials
 
 def hash_key(key: str) -> str:
+    """Create a short hash for audit logging (privacy-preserving)."""
     return hashlib.sha256(key.encode()).hexdigest()[:8]
 
 
-# ---- Middleware (METRICS LAYER 1) ----
-@app.middleware("http")
-async def add_request_id_and_audit(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-    request.state.request_id = request_id
-    structlog.contextvars.bind_contextvars(request_id=request_id)
+# --- 🛡️ PII Detection (Regex-based Guardrails) ---
+PII_PATTERNS = {
+    "email": r"\b[\w\.-]+@[\w\.-]+\.\w{2,}\b",
+    "credit_card": r"\b(?:\d{4}[- ]?){3}\d{4}\b",
+    "phone": r"\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b",
+}
 
-    start_time = time.time()
-    status_code = 500
-
+def detect_pii(text: str) -> bool:
+    """Scan text for PII patterns (email, credit card, phone). Returns True if any found.
+    Robust against None/empty inputs.
+    """
     try:
-        response = await call_next(request)
-        status_code = response.status_code
-        return response
+        if not text or not isinstance(text, str):
+            return False
+        for pattern_name, pattern in PII_PATTERNS.items():
+            if re.search(pattern, text, re.IGNORECASE):
+                log.warning("pii_detected", pattern=pattern_name)
+                return True
+        return False
     except Exception as e:
-        status_code = 500
-        raise e
-    finally:
-        duration = time.time() - start_time
-        try:
-            REQUESTS_TOTAL.labels(
-                method=request.method,
-                endpoint=request.url.path,
-                status_code=str(status_code),
-            ).inc()
-            REQUEST_LATENCY.labels(
-                method=request.method, endpoint=request.url.path
-            ).observe(duration)
-        except Exception as metric_err:
-            log.error("metrics_collection_failed", error=str(metric_err))
+        log.error("pii_detection_error", error=str(e))
+        return False
 
 
-# ---- Auth ----
-def authenticate(creds: HTTPAuthorizationCredentials = Depends(security_scheme)):
-    key = creds.credentials.strip()
-    if key not in API_KEYS:
-        log.warning("auth_failed", reason="invalid_key")
-        raise HTTPException(status_code=403, detail="Invalid API key")
-
-    now = time.time()
-    key_hash = hash_key(key)
-    hits = clients.get(key_hash, [])
-    hits = [t for t in hits if now - t < 60]
-    if len(hits) >= RATE_LIMIT:
-        log.warning("rate_limit_exceeded", client_id=key_hash)
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
-    hits.append(now)
-    clients[key_hash] = hits
-    return {"user_hash": key_hash}
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
+# --- 📝 Models ---
+DEFAULT_MODEL = "mistral:7b-instruct-q4_K_M"
 
 class ChatRequest(BaseModel):
-    model: str
-    messages: List[ChatMessage]
+    model: Optional[str] = None
+    messages: list
 
 
-class LogEntry(BaseModel):
-    request_id: str
-    timestamp: float
-    user_hash: str
-    model: str
-    status_code: int
-    latency_ms: float
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    pii_detected: bool = False
-    request_blocked: bool = False
+# --- 🚦 Rate Limiting (Proxy-aware for AWS/Load Balancers) ---
+def get_client_ip(request: Request) -> str:
+    """Get client IP, checking X-Forwarded-For header for proxy/load balancer scenarios."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        # X-Forwarded-For can be comma-separated; first IP is the original client
+        return forwarded.split(",")[0].strip()
+    return get_remote_address(request)
 
-    class Config:
-        from_attributes = True
+limiter = Limiter(key_func=get_client_ip)
 
 
-# ---- Endpoints ----
+# --- 🚀 App Lifecycle ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize database tables on startup."""
+    log.info("initializing_database")
+    init_db()
+    log.info("database_ready")
+    yield
+    log.info("graceful_shutdown")
 
 
-@app.get("/metrics", tags=["Observability"])
-async def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+app = FastAPI(title="Sabhya AI API", version="0.3.0", lifespan=lifespan)
+
+# Attach rate limiter to app
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# --- 🛡️ CORS SETTINGS (CRITICAL FOR FRONTEND) ---
+# TODO: In production, replace with actual domain(s)
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS if CORS_ORIGINS != ["*"] else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-@app.get("/health/live", tags=["Health"])
-async def health_live():
+# --- 🚦 Routes ---
+@app.get("/health/live")
+def health_check():
     return {"status": "alive"}
 
 
-@app.get("/health/ready", tags=["Health"])
-async def health_ready():
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            resp = await client.get(OLLAMA_BASE_URL)
-            if resp.status_code == 200:
-                OLLAMA_UP.set(1)
-                return {"status": "ready", "component": "ollama"}
-    except Exception:
-        pass
-    OLLAMA_UP.set(0)
-    raise HTTPException(status_code=503, detail="Inference engine not ready")
-
-
-@app.get("/v1/audit/logs", response_model=List[LogEntry], tags=["Governance"])
-async def get_audit_logs(
-    limit: int = 50,
-    auth_ctx: dict = Depends(authenticate),
-    db: Session = Depends(get_db),
+@app.post("/v1/documents")
+async def upload_document(
+    file: UploadFile = File(...),
+    api_key: str = Depends(verify_api_key),
+    db: Session = Depends(get_db)
 ):
-    logs = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit).all()
-    return logs
-
-
-@app.post("/v1/chat/completions", tags=["Inference"])
-async def chat_completions(
-    request: Request,
-    body: ChatRequest,
-    background_tasks: BackgroundTasks,
-    auth_ctx: dict = Depends(authenticate),
-    db: Session = Depends(get_db),
-):
-    request_id = request.state.request_id
+    """Upload a PDF document for RAG ingestion."""
+    request_id = str(uuid.uuid4())
     start_time = time.time()
-
-    if body.model not in ALLOWED_MODELS:
-        raise HTTPException(status_code=400, detail="Model not allowed")
-
-    clean_messages = []
-    pii_flag = False
-    blocked_flag = False
-    block_reason = None
-
-    for m in body.messages:
-        if m.role == "user":
-            cleaned, found, blocked = scanner.scan_and_redact(m.content)
-            if blocked:
-                blocked_flag = True
-                block_reason = "secret_key_detected"
-                SECURITY_VIOLATIONS.labels(violation_type="secret_key").inc()
-                break
-            if found:
-                pii_flag = True
-                PII_DETECTED.labels(model=body.model).inc()
-
-            if guardrails.scan_for_jailbreaks(cleaned):
-                blocked_flag = True
-                block_reason = "jailbreak_attempt"
-                SECURITY_VIOLATIONS.labels(violation_type="jailbreak").inc()
-                break
-            clean_messages.append({"role": m.role, "content": cleaned})
-        else:
-            clean_messages.append({"role": m.role, "content": m.content})
-
     status_code = 200
-    c_tokens = 0
-    content = ""
-    p_tokens = 0
-
+    
     try:
-        if blocked_flag:
-            status_code = 400
-            content = f"Request rejected: Security violation ({block_reason})."
-            log.warning(
-                "security_block", user=auth_ctx["user_hash"], reason=block_reason
-            )
-        else:
-            final_messages = guardrails.enforce_system_prompt(clean_messages)
-            prompt_text = "".join([m["content"] for m in final_messages])
-            p_tokens = count_tokens(prompt_text)
-            TOKENS_TOTAL.labels(type="prompt", model=body.model).inc(p_tokens)
-
-            log.info(
-                "chat_request",
-                user=auth_ctx["user_hash"],
-                model=body.model,
-                prompt_tokens=p_tokens,
-                pii_detected=pii_flag,
-            )
-
-            async with semaphore:
-                async with httpx.AsyncClient(timeout=60) as client:
-                    r = await client.post(
-                        OLLAMA_CHAT_URL,
-                        json={
-                            "model": body.model,
-                            "messages": final_messages,
-                            "stream": False,
-                        },
-                    )
-
-            if r.status_code != 200:
-                status_code = 502
-                raise HTTPException(status_code=502, detail="Ollama failed")
-
-            result = r.json()
-            content = result.get("message", {}).get("content", "")
-            c_tokens = count_tokens(content)
-            TOKENS_TOTAL.labels(type="completion", model=body.model).inc(c_tokens)
-
-    except HTTPException as he:
-        raise he
+        # Save file temporarily
+        file_location = f"/tmp/{file.filename}"
+        with open(file_location, "wb+") as file_object:
+            file_object.write(await file.read())
+        
+        # Ingest into ChromaDB
+        chunks = rag_service.ingest_pdf(file_location, file.filename)
+        
+        result = {
+            "filename": file.filename, 
+            "chunks_indexed": chunks, 
+            "status": "success"
+        }
+        
     except Exception as e:
         status_code = 500
-        log.error("inference_failed", error=str(e))
-        raise e
+        log.error("upload_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    
     finally:
-        latency = (time.time() - start_time) * 1000
+        # Always log to audit table
+        latency_ms = (time.time() - start_time) * 1000
         audit_entry = AuditLog(
             request_id=request_id,
-            user_hash=auth_ctx["user_hash"],
-            model=body.model,
-            endpoint="/v1/chat/completions",
+            user_hash=hash_key(api_key),
+            model="rag",
+            endpoint="/v1/documents",
             status_code=status_code,
-            latency_ms=latency,
-            prompt_tokens=p_tokens,
-            completion_tokens=c_tokens,
-            total_tokens=p_tokens + c_tokens,
-            pii_detected=pii_flag,
-            request_blocked=blocked_flag,
+            latency_ms=latency_ms,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            pii_detected=False,
         )
         db.add(audit_entry)
         db.commit()
-        log.info(
-            "audit_log_persisted",
-            request_id=request_id,
-            latency_ms=latency,
-            blocked=blocked_flag,
-        )
+        log.info("audit_logged_upload", request_id=request_id)
+    
+    return result
 
-    if blocked_flag:
-        raise HTTPException(status_code=400, detail=content)
 
-    return {
-        "id": request_id,
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": body.model,
-        "usage": {
-            "prompt_tokens": p_tokens,
-            "completion_tokens": c_tokens,
-            "total_tokens": p_tokens + c_tokens,
-        },
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
+@app.post("/v1/chat/completions")
+@limiter.limit("50/minute")
+async def chat_completion(
+    request: Request,
+    chat_req: ChatRequest,
+    api_key: str = Depends(verify_api_key),
+    db: Session = Depends(get_db)
+):
+    """Chat completion with RAG context injection. Rate limited to 50 req/min."""
+    request_id = str(uuid.uuid4())
+    start_time = time.time()
+    status_code = 200
+    prompt_tokens = 0
+    completion_tokens = 0
+    pii_detected = False
+    
+    # Dynamic Model Routing: Fallback to default if not specified
+    model = chat_req.model if chat_req.model else DEFAULT_MODEL
+    log.info("model_routing", requested=chat_req.model, resolved=model)
+    
+    try:
+        # Extract the last user message
+        user_query = chat_req.messages[-1]["content"]
+        
+        # --- 🛡️ PII Detection (Passive Mode: Flag, don't block) ---
+        pii_detected = detect_pii(user_query)
+        if pii_detected:
+            log.warning("pii_flagged_in_request", request_id=request_id)
+        
+        # 1. Retrieve Context from ChromaDB (now returns tuple: docs, context_note)
+        context_docs, context_note = rag_service.query(user_query)
+        context_text = "\n".join(context_docs) if context_docs else "No specific context available."
+        
+        # 2. Construct Prompt with RAG context + metadata note
+        system_prompt = f"You are a helpful assistant. Use this context to answer: {context_text}"
+        if context_note:
+            system_prompt += f"\n\n{context_note}"
+        
+        # 3. Call Ollama LLM with dynamic model
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_query}
+            ],
+            "stream": False
+        }
+        
+        # Estimate tokens (rough heuristic)
+        prompt_tokens = len(system_prompt + user_query) // 4
+        
+        resp = requests.post(f"{ollama_url}/api/chat", json=payload, timeout=60)
+        
+        if resp.status_code == 200:
+            content = resp.json()["message"]["content"]
+            completion_tokens = len(content) // 4
+            result = {
+                "id": request_id,
+                "choices": [{"message": {"role": "assistant", "content": content}}],
+                "model": model,
+                "pii_detected": pii_detected,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens
+                }
             }
-        ],
-    }
+        else:
+            status_code = 502
+            error_detail = f"Ollama Error ({model}): {resp.text}"
+            log.error("ollama_error", model=model, status=resp.status_code)
+            raise HTTPException(status_code=502, detail=error_detail)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        status_code = 500
+        log.error("chat_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    finally:
+        # Always log to audit table with PII flag
+        latency_ms = (time.time() - start_time) * 1000
+        audit_entry = AuditLog(
+            request_id=request_id,
+            user_hash=hash_key(api_key),
+            model=model,
+            endpoint="/v1/chat/completions",
+            status_code=status_code,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            pii_detected=pii_detected,
+        )
+        db.add(audit_entry)
+        db.commit()
+        log.info("audit_logged_chat", request_id=request_id, pii_detected=pii_detected)
+    
+    return result
+
+
+@app.get("/v1/audit/logs")
+async def get_audit_logs(
+    limit: int = 50,
+    api_key: str = Depends(verify_api_key),
+    db: Session = Depends(get_db)
+):
+    """Retrieve audit logs for governance dashboard."""
+    logs = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit).all()
+    return [
+        {
+            "request_id": log.request_id,
+            "timestamp": log.timestamp,
+            "user_hash": log.user_hash,
+            "model": log.model,
+            "endpoint": log.endpoint,
+            "status_code": log.status_code,
+            "latency_ms": log.latency_ms,
+            "total_tokens": log.total_tokens,
+            "pii_detected": log.pii_detected,
+        }
+        for log in logs
+    ]

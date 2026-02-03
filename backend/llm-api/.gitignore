@@ -1,3 +1,24 @@
+# Python
 __pycache__/
+*.pyc
 .venv/
+venv*/
+venv_py311/
+
+# Environment
 .env
+*.env
+
+# Data Volumes (Heavy/Sensitive - DO NOT COMMIT)
+pg_data/
+chroma_data/
+ollama_data/
+host_data/
+data/
+
+# SQLite (legacy)
+*.db
+
+# Temp files
+*.log
+*.pid

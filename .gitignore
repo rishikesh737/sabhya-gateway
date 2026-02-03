@@ -1,12 +1,42 @@
-# OS / editor
+# OS / Editor
 .DS_Store
 *.swp
 *.swo
 .idea/
 .vscode/
 
-# Env / secrets
+# Environment / Secrets
 .env
 .env.*
+**/*.env
 
+# Database & Data Volumes (Heavy/Sensitive)
+**/pg_data/
+**/chroma_data/
+**/ollama_data/
+**/host_data/
+**/data/
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/venv*/
+**/venv_py311/
+*.egg-info/
+
+# Node.js / Next.js
+**/node_modules/
+**/.next/
+**/out/
+**/.turbo/
+
+# Build artifacts
+*.log
+*.pid
+*.seed
+
+# SQLite (legacy)
+*.db
+
+# Kubernetes secrets (if any remain)
 infra/k8s/secrets.yaml
