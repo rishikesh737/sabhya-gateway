@@ -180,5 +180,5 @@ MIT License — See [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
-  <sub>Built with 🛡️ by the Sabhya AI Team</sub>
+  <sub>Built with Security In Mind 🛡️ by the Rishikesh Pednekar</sub>
 </p>
