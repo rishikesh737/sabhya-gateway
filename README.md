@@ -21,12 +21,7 @@ Built for security-conscious organizations, Sabhya provides:
 - **Rate limiting** to protect infrastructure from abuse
 - **Dynamic model routing** for cost/performance optimization
 
-### The UI Constitution
-The interface follows a strict **"Security Operations Center"** aesthetic:
-- ❌ No chat bubbles or playful animations
-- ❌ No gradients or "thinking" spinners
-- ✅ Clinical, industrial design language
-- ✅ Static status banners: `[PROCESSING]` → `[COMPLETED]`
+
 
 ---
 
