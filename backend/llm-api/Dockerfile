@@ -5,6 +5,7 @@ FROM python:3.11-slim-bookworm
 # We need g++ to compile the vector database engine
 RUN apt-get update && apt-get install -y \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Security: non-root user ----
@@ -20,7 +21,15 @@ WORKDIR /app
 
 # ---- Install deps ----
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# 1. Install everything EXCEPT the large spacy model first
+RUN grep -v "en_core_web_lg" requirements.txt > reqs_no_model.txt && \
+    pip install --no-cache-dir --timeout 1000 --retries 10 -r reqs_no_model.txt
+
+# 2. Manually download and install the large model (More robust)
+RUN curl -L -o en_core_web_lg-3.8.0-py3-none-any.whl "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl" && \
+    pip install en_core_web_lg-3.8.0-py3-none-any.whl && \
+    rm en_core_web_lg-3.8.0-py3-none-any.whl
 
 # ---- Copy app code ----
 COPY app ./app

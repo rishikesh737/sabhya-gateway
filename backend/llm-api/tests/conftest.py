@@ -4,27 +4,23 @@ Sabhya AI - Pytest Configuration
 Shared fixtures and configuration for all tests.
 """
 
-import pytest
 import os
+
+# ============================================================================
+# ENVIRONMENT SETUP — must be set BEFORE any app imports
+# (TrustedHostMiddleware reads ALLOWED_HOSTS at module import time)
+# ============================================================================
+os.environ["ENVIRONMENT"] = "development"
+os.environ["DEBUG"] = "true"
+os.environ["SECRET_KEY"] = "test-secret-key-for-testing-minimum-32-chars"
+os.environ["AUDIT_HMAC_SECRET"] = "test-audit-secret-for-testing-32-chars"
+os.environ["API_KEYS"] = "test-key-1,test-key-2"
+os.environ["LEGACY_AUTH_ENABLED"] = "true"
+os.environ["ALLOWED_HOSTS"] = "testserver,localhost,127.0.0.1"
+os.environ["DATABASE_URL"] = "sqlite:///./test_sabhya.db"
+
+import pytest
 from unittest.mock import MagicMock, patch
-
-
-# ============================================================================
-# ENVIRONMENT SETUP
-# ============================================================================
-
-@pytest.fixture(scope="session", autouse=True)
-def setup_test_environment():
-    """Set up test environment variables."""
-    os.environ["ENVIRONMENT"] = "testing"
-    os.environ["DEBUG"] = "true"
-    os.environ["SECRET_KEY"] = "test-secret-key-for-testing-minimum-32-chars"
-    os.environ["AUDIT_HMAC_SECRET"] = "test-audit-secret-for-testing-32-chars"
-    os.environ["API_KEYS"] = "test-key-1,test-key-2"
-    os.environ["LEGACY_AUTH_ENABLED"] = "true"
-    os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test_db"
-    yield
-    # Cleanup if needed
 
 
 # ============================================================================
@@ -48,10 +44,13 @@ def mock_db():
 
 @pytest.fixture
 def test_client():
-    """Create FastAPI test client."""
+    """Create FastAPI test client with DB tables initialized."""
     try:
         from fastapi.testclient import TestClient
         from app.main import app
+        from app.database import init_db
+        # Ensure all tables (including audit_logs_v2) are created
+        init_db()
         return TestClient(app)
     except ImportError:
         pytest.skip("FastAPI not available for testing")

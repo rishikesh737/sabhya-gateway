@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.auth.security import require_role, Roles, UserInfo
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +151,7 @@ async def readiness_check(db: Session = Depends(get_db)):
 @router.get("/deep")
 async def deep_health_check(
     db: Session = Depends(get_db),
-    # Uncomment when auth is integrated:
-    # current_user: UserInfo = Depends(require_role(Roles.ADMIN))
+    current_user: UserInfo = Depends(require_role(Roles.ADMIN))
 ):
     """
     Deep health check - Detailed system status for monitoring.

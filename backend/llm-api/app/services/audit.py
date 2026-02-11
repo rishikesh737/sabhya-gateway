@@ -19,7 +19,7 @@ from typing import Optional, List, Dict, Any
 from uuid import uuid4
 
 from sqlalchemy import Column, String, Float, Integer, Boolean, DateTime, Text, Index
-from sqlalchemy.ext.declarative import declarative_base
+from app.models import Base
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,6 @@ AUDIT_HMAC_SECRET = os.getenv(
     "AUDIT_HMAC_SECRET",
     "audit-secret-change-in-production-minimum-32-chars"
 ).encode()
-
-Base = declarative_base()
 
 
 # ============================================================================

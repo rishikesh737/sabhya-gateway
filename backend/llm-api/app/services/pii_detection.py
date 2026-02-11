@@ -95,10 +95,13 @@ class PIIDetectionService:
         )
         self.anonymize_logs = os.getenv("PII_ANONYMIZE_LOGS", "true").lower() == "true"
         
+        # Always initialize regex patterns as baseline
+        self._init_regex()
+        
         if PRESIDIO_AVAILABLE:
             self._init_presidio()
         else:
-            self._init_regex()
+            self.use_presidio = False
     
     def _init_presidio(self):
         """Initialize Presidio analyzer and anonymizer."""
@@ -109,16 +112,14 @@ class PIIDetectionService:
             logger.info("Presidio PII detection initialized")
         except Exception as e:
             logger.error(f"Failed to initialize Presidio: {e}")
-            self._init_regex()
+            self.use_presidio = False
     
     def _init_regex(self):
-        """Initialize regex-based fallback."""
-        self.use_presidio = False
+        """Initialize regex-based patterns."""
         self.patterns = {
             name: re.compile(pattern, re.IGNORECASE)
             for name, pattern in REGEX_PATTERNS.items()
         }
-        logger.info("Using regex-based PII detection (fallback mode)")
     
     def detect_pii(
         self,
@@ -128,30 +129,6 @@ class PIIDetectionService:
     ) -> Dict[str, Any]:
         """
         Detect PII entities in text with confidence scores.
-        
-        Args:
-            text: Input text to analyze
-            language: Language code (default: "en")
-            threshold: Confidence threshold override (0.0-1.0)
-            
-        Returns:
-            {
-                'pii_detected': bool,
-                'entities': [
-                    {
-                        'type': 'EMAIL_ADDRESS',
-                        'text': 'j***@example.com',  # Partially redacted
-                        'start': 10,
-                        'end': 25,
-                        'confidence': 0.95,
-                        'risk_level': 'MEDIUM'
-                    }
-                ],
-                'risk_level': 'HIGH' | 'MEDIUM' | 'LOW',
-                'action': 'BLOCK' | 'FLAG' | 'ALLOW',
-                'entity_count': 3,
-                'high_risk_count': 1
-            }
         """
         if not text or not isinstance(text, str):
             return self._empty_result()
@@ -159,13 +136,50 @@ class PIIDetectionService:
         threshold = threshold or self.confidence_threshold
         
         try:
+            entities = []
+            
+            # 1. Run Presidio if available
             if self.use_presidio:
-                return self._detect_with_presidio(text, language, threshold)
-            else:
-                return self._detect_with_regex(text)
+                presidio_result = self._detect_with_presidio(text, language, threshold)
+                if presidio_result['pii_detected']:
+                    entities.extend(presidio_result['entities'])
+            
+            # 2. Run Regex (always run for critical patterns check)
+            regex_result = self._detect_with_regex(text)
+            if regex_result['pii_detected']:
+                # Deduplicate: Only add if not overlapping with existing Presidio entities
+                for regex_entity in regex_result['entities']:
+                    if not self._is_overlapping(regex_entity, entities):
+                        entities.append(regex_entity)
+            
+            if not entities:
+                return self._empty_result()
+                
+            # Recalculate risk and counts
+            max_risk = PIIRiskLevel.LOW
+            high_risk_count = 0
+            
+            for entity in entities:
+                risk_val = entity.get('risk_level', 'LOW')
+                if risk_val == 'HIGH':
+                    max_risk = PIIRiskLevel.HIGH
+                    high_risk_count += 1
+                elif risk_val == 'MEDIUM' and max_risk != PIIRiskLevel.HIGH:
+                    max_risk = PIIRiskLevel.MEDIUM
+            
+            action = self._determine_action(max_risk)
+            
+            return {
+                'pii_detected': True,
+                'entities': entities,
+                'risk_level': max_risk.value,
+                'action': action,
+                'entity_count': len(entities),
+                'high_risk_count': high_risk_count
+            }
+                
         except Exception as e:
             logger.error(f"PII detection error: {e}")
-            # Safe default: flag as potential risk
             return {
                 'pii_detected': True,
                 'entities': [],
@@ -175,6 +189,14 @@ class PIIDetectionService:
                 'high_risk_count': 0,
                 'error': str(e)
             }
+            
+    def _is_overlapping(self, entity, existing_entities):
+        """Check if entity overlaps with any existing entity."""
+        for existing in existing_entities:
+            # Check for overlap in ranges
+            if max(entity['start'], existing['start']) < min(entity['end'], existing['end']):
+                return True
+        return False
     
     def _detect_with_presidio(
         self,
@@ -183,18 +205,19 @@ class PIIDetectionService:
         threshold: float
     ) -> Dict[str, Any]:
         """Detect PII using Presidio NLP engine."""
-        results: List[RecognizerResult] = self.analyzer.analyze(
-            text=text,
-            language=language,
-            score_threshold=threshold
-        )
+        try:
+            results: List[RecognizerResult] = self.analyzer.analyze(
+                text=text,
+                language=language,
+                score_threshold=threshold
+            )
+        except Exception:
+            return self._empty_result()
         
         if not results:
             return self._empty_result()
         
         entities = []
-        max_risk = PIIRiskLevel.LOW
-        high_risk_count = 0
         
         for result in results:
             # Get risk level for entity type
@@ -202,13 +225,6 @@ class PIIDetectionService:
                 result.entity_type, 
                 PIIRiskLevel.LOW
             )
-            
-            # Track highest risk
-            if risk == PIIRiskLevel.HIGH:
-                max_risk = PIIRiskLevel.HIGH
-                high_risk_count += 1
-            elif risk == PIIRiskLevel.MEDIUM and max_risk != PIIRiskLevel.HIGH:
-                max_risk = PIIRiskLevel.MEDIUM
             
             # Partially redact the detected text for logging
             original_text = text[result.start:result.end]
@@ -223,32 +239,18 @@ class PIIDetectionService:
                 'risk_level': risk.value
             })
         
-        action = self._determine_action(max_risk)
-        
         return {
             'pii_detected': True,
-            'entities': entities,
-            'risk_level': max_risk.value,
-            'action': action,
-            'entity_count': len(entities),
-            'high_risk_count': high_risk_count
+            'entities': entities
         }
     
     def _detect_with_regex(self, text: str) -> Dict[str, Any]:
         """Fallback regex-based detection."""
         entities = []
-        max_risk = PIIRiskLevel.LOW
-        high_risk_count = 0
         
         for entity_type, pattern in self.patterns.items():
             for match in pattern.finditer(text):
                 risk = ENTITY_RISK_MAPPING.get(entity_type, PIIRiskLevel.LOW)
-                
-                if risk == PIIRiskLevel.HIGH:
-                    max_risk = PIIRiskLevel.HIGH
-                    high_risk_count += 1
-                elif risk == PIIRiskLevel.MEDIUM and max_risk != PIIRiskLevel.HIGH:
-                    max_risk = PIIRiskLevel.MEDIUM
                 
                 original_text = match.group()
                 redacted_text = self._partial_redact(original_text, entity_type)
@@ -265,15 +267,9 @@ class PIIDetectionService:
         if not entities:
             return self._empty_result()
         
-        action = self._determine_action(max_risk)
-        
         return {
             'pii_detected': True,
-            'entities': entities,
-            'risk_level': max_risk.value,
-            'action': action,
-            'entity_count': len(entities),
-            'high_risk_count': high_risk_count
+            'entities': entities
         }
     
     def anonymize_text(

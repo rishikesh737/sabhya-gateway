@@ -1,96 +1,84 @@
 import { ChatRequest, ChatResponse, AuditLog } from "./types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
-
-// D. Error Taxonomy
-export class GatewayError extends Error {
-    constructor(message: string, public type: "BLOCKED" | "RATE_LIMIT" | "UPSTREAM" | "GATEWAY_OFFLINE" | "UNKNOWN") {
-        super(message);
-        this.name = "GatewayError";
-    }
-}
+const API_URL = ""; // Empty because we rely on Next.js proxy in next.config.mjs
 
 class ApiService {
+    private getHeaders(isFormData: boolean = false): HeadersInit {
+        const token = typeof window !== 'undefined' ? localStorage.getItem("token") : null;
+        const headers: any = {};
+        
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
+        }
+        
+        // Do NOT set Content-Type for FormData; browser sets it with boundary automatically
+        if (!isFormData) {
+            headers["Content-Type"] = "application/json";
+        }
+        
+        return headers;
+    }
+
     private async fetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-        const headers = {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${API_KEY}`,
-            ...options.headers,
-        };
-
         try {
-            const response = await fetch(`${API_URL}${endpoint}`, {
-                ...options,
-                headers,
-            });
+            const response = await fetch(`${API_URL}${endpoint}`, options);
 
-            if (!response.ok) {
-                let errorType: "BLOCKED" | "RATE_LIMIT" | "UPSTREAM" | "GATEWAY_OFFLINE" | "UNKNOWN" = "UNKNOWN";
-
-                if (response.status === 400) errorType = "BLOCKED";
-                else if (response.status === 429) errorType = "RATE_LIMIT";
-                else if (response.status === 502 || response.status === 503 || response.status === 504) errorType = "UPSTREAM";
-
-                let errorDetail = `HTTP error! status: ${response.status}`;
-                try {
-                    const body = await response.json();
-                    if (body.detail) errorDetail = body.detail;
-                } catch (_) { }
-
-                throw new GatewayError(errorDetail, errorType);
+            if (response.status === 401) {
+                console.error("Unauthorized! Redirecting to login...");
+                if (typeof window !== 'undefined') window.location.href = "/login";
+                throw new Error("Unauthorized");
             }
 
-            return response.json();
+            if (!response.ok) {
+                const errorBody = await response.text();
+                throw new Error(`API Error ${response.status}: ${errorBody}`);
+            }
+
+            return await response.json();
         } catch (error) {
-            if (error instanceof GatewayError) throw error;
-            // Distinguish Network/Fetch failures
-            throw new GatewayError("Gateway Unreachable (Network Down)", "GATEWAY_OFFLINE");
+            console.error("Fetch error:", error);
+            throw error;
         }
     }
 
-    async sendChat(payload: ChatRequest, requestId?: string): Promise<ChatResponse> {
-        const headers: Record<string, string> = {};
-        if (requestId) {
-            headers["X-Request-ID"] = requestId;
-        }
-
+    async chat(request: ChatRequest): Promise<ChatResponse> {
         return this.fetch<ChatResponse>("/v1/chat/completions", {
             method: "POST",
-            body: JSON.stringify(payload),
-            headers,
+            headers: this.getHeaders(),
+            body: JSON.stringify(request),
         });
     }
 
-    // A. Audit log timing - Robust implementation with Retries
-    async getAuditLog(requestId: string, attempts = 5, delay = 1000): Promise<AuditLog | null> {
-        for (let i = 0; i < attempts; i++) {
-            try {
-                // Scope: Fetch specific request ID via list filtering (backend limitation workaround)
-                // Ideally backend should support GET /v1/audit/logs/{id}
-                const logs = await this.getRecentLogs(50);
-                const log = logs.find((l) => l.request_id === requestId);
-
-                if (log) return log;
-
-                // Wait before retry
-                if (i < attempts - 1) await new Promise(r => setTimeout(r, delay));
-            } catch (e) {
-                console.error(`Attempt ${i + 1} failed to fetch audit log`, e);
-                if (i < attempts - 1) await new Promise(r => setTimeout(r, delay));
-            }
-        }
-        return null;
+    async getAuditLogs(): Promise<AuditLog[]> {
+        return this.fetch<AuditLog[]>("/v1/audit/logs", {
+            method: "GET",
+            headers: this.getHeaders(),
+        });
     }
 
-    async getRecentLogs(limit: number = 50): Promise<AuditLog[]> {
-        return this.fetch<AuditLog[]>(`/v1/audit/logs?limit=${limit}`);
+    async getDocuments(): Promise<{ documents: string[] }> {
+        return this.fetch<{ documents: string[] }>("/rag/documents", {
+            method: "GET",
+            headers: this.getHeaders(),
+        });
     }
 
-    async getMetrics(): Promise<string> {
-        const headers = { "Authorization": `Bearer ${API_KEY}` };
-        const response = await fetch(`${API_URL}/metrics`, { headers });
-        return response.text();
+    async uploadDocument(file: File): Promise<any> {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        return this.fetch("/v1/documents", {
+            method: "POST",
+            headers: this.getHeaders(true), // true = isFormData
+            body: formData,
+        });
+    }
+
+    async deleteDocument(filename: string): Promise<any> {
+        return this.fetch(`/rag/documents/${encodeURIComponent(filename)}`, {
+            method: "DELETE",
+            headers: this.getHeaders(),
+        });
     }
 }
 

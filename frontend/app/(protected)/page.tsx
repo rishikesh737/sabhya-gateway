@@ -1,14 +1,14 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import KnowledgeBase from "@/components/KnowledgeBase";
+import GovernanceLogs from "@/components/GovernanceLogs";
+import { useState, useRef, useEffect } from "react";
 import { toast } from "sonner";
 import {
   Terminal,
   FolderOpen,
   ShieldAlert,
   Settings,
-  RefreshCw,
-  Upload,
   Send,
   PanelLeftClose,
   PanelLeft,
@@ -17,8 +17,6 @@ import {
   CheckCircle2,
   Clock,
   ChevronDown,
-  Download,
-  Trash2,
   BrainCircuit,
 } from "lucide-react";
 
@@ -42,18 +40,6 @@ const MODEL_OPTIONS = [
 // ============================================================================
 // Types
 // ============================================================================
-interface AuditLog {
-  request_id: string;
-  timestamp: number;
-  user_hash: string;
-  model: string;
-  endpoint: string;
-  status_code: number;
-  latency_ms: number;
-  total_tokens: number;
-  pii_detected: boolean;
-}
-
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -125,113 +111,12 @@ export default function SabhyaDashboard() {
     }
   }, [chatHistory]);
 
-  // ===== KNOWLEDGE BASE STATE =====
-  const [isDragging, setIsDragging] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState<{ name: string; chunks: number; timestamp: number }[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // ===== GOVERNANCE LOGS STATE =====
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [isLogsLoading, setIsLogsLoading] = useState(false);
-  const [logsError, setLogsError] = useState<string | null>(null);
-  const [deletingLogId, setDeletingLogId] = useState<string | null>(null);
-
   // ===== HYDRATION SAFETY (Prevent SSR/Client mismatch) =====
   const [isMounted, setIsMounted] = useState(false);
   useEffect(() => {
     setIsMounted(true);
   }, []);
 
-  // ===== FETCH LOGS FUNCTION =====
-  const fetchLogs = useCallback(async () => {
-    setIsLogsLoading(true);
-    setLogsError(null);
-    try {
-      const res = await fetch(`${API_BASE}/v1/audit/logs?limit=100`, {
-        headers: { Authorization: `Bearer ${API_KEY}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setLogs(data);
-      setIsConnected(true);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      setLogsError(message);
-      setIsConnected(false);
-    } finally {
-      setIsLogsLoading(false);
-    }
-  }, []);
-
-  // ===== INITIAL LOGS FETCH + AUTO-REFRESH (30s) =====
-  useEffect(() => {
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 30000);
-    return () => clearInterval(interval);
-  }, [fetchLogs]);
-
-  // ===== DELETE LOG FUNCTION =====
-  const deleteLog = async (requestId: string) => {
-    if (!confirm("Are you sure you want to delete this log entry?")) return;
-
-    setDeletingLogId(requestId);
-    try {
-      const res = await fetch(`${API_BASE}/v1/audit/logs/${requestId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${API_KEY}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // Remove from local state
-      setLogs((prev) => prev.filter((log) => log.request_id !== requestId));
-      toast.success("Log entry deleted");
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      toast.error(`Failed to delete: ${message}`);
-    } finally {
-      setDeletingLogId(null);
-    }
-  };
-
-  // ===== DOWNLOAD CSV FUNCTION =====
-  const downloadCSV = () => {
-    if (logs.length === 0) {
-      toast.error("No logs to export");
-      return;
-    }
-
-    // Create CSV content
-    const headers = ["Timestamp", "Request ID", "User Hash", "Model", "Endpoint", "Status", "Latency (ms)", "Tokens", "PII Detected"];
-    const rows = logs.map((log) => [
-      new Date(log.timestamp).toISOString(),
-      log.request_id,
-      log.user_hash,
-      log.model,
-      log.endpoint,
-      log.status_code,
-      log.latency_ms.toFixed(0),
-      log.total_tokens,
-      log.pii_detected ? "Yes" : "No",
-    ]);
-
-    const csvContent = [
-      headers.join(","),
-      ...rows.map((row) => row.map((cell) => `"${cell}"`).join(",")),
-    ].join("\n");
-
-    // Create and trigger download
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `sabhya-audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-
-    toast.success(`Exported ${logs.length} logs to CSV`);
-  };
 
   // ===== SUBMIT REQUEST WITH STREAMING =====
   const submitRequest = async () => {
@@ -360,7 +245,6 @@ export default function SabhyaDashboard() {
                     chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
                   }
 
-                  fetchLogs();
                   return;
                 }
               } catch {
@@ -390,60 +274,6 @@ export default function SabhyaDashboard() {
     setCurrentSources([]);
   };
 
-  // ===== FILE UPLOAD =====
-  const handleUpload = async (file: File) => {
-    if (!file.name.endsWith(".pdf")) {
-      toast.error("Invalid Format", { description: "Only PDF documents accepted." });
-      return;
-    }
-
-    setIsUploading(true);
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      const res = await fetch(`${API_BASE}/v1/documents`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${API_KEY}` },
-        body: formData,
-      });
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-      }
-
-      const data = await res.json();
-      setUploadedFiles((prev) => [
-        { name: file.name, chunks: data.chunks_indexed || 0, timestamp: Date.now() },
-        ...prev,
-      ]);
-
-      setIsConnected(true);
-      toast.success("Document Indexed", {
-        description: `${file.name} — ${data.chunks_indexed} chunks.`,
-      });
-      fetchLogs();
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Upload failed";
-      setIsConnected(false);
-      toast.error("Indexing Failed", { description: message });
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleUpload(file);
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) handleUpload(file);
-  };
-
   // ===== HELPERS =====
   const getErrorMessage = (status: number, body?: string): string => {
     switch (status) {
@@ -466,25 +296,6 @@ export default function SabhyaDashboard() {
       default:
         return `HTTP ERROR (${status})${body ? ` — ${body.slice(0, 100)}` : ""}`;
     }
-  };
-
-  const formatTimestamp = (ts: number) => {
-    // Only format on client to prevent hydration mismatch
-    if (!isMounted) return "—";
-    return new Date(ts * 1000).toLocaleString("en-US", {
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    });
-  };
-
-  const getStatusBadge = (code: number) => {
-    if (code >= 200 && code < 300) return <span className="text-emerald-500">OK</span>;
-    if (code === 429) return <span className="text-amber-500">BLOCKED</span>;
-    return <span className="text-red-500">FAIL</span>;
   };
 
   // ===== RENDER =====
@@ -841,183 +652,18 @@ export default function SabhyaDashboard() {
         </div>
 
         {/* ===== GOVERNANCE LOGS VIEW ===== */}
-        <div className={`h-full flex flex-col ${activeView === "logs" ? "block" : "hidden"}`}>
-          <div className="border-b border-slate-800 bg-slate-900/50 px-6 py-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="flex items-center gap-2 text-sm font-bold text-slate-100 uppercase tracking-wider">
-                  <ShieldAlert size={16} className="text-cyan-500" />
-                  Governance Logs
-                </h2>
-                <p className="text-[11px] text-slate-500 mt-1">Audit trail — {logs.length} records — Auto-refresh: 30s</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={downloadCSV}
-                  disabled={logs.length === 0}
-                  className="flex items-center gap-2 bg-cyan-900/50 hover:bg-cyan-800/50 px-4 py-2 text-xs font-medium text-cyan-300 disabled:opacity-50 border border-cyan-700"
-                >
-                  <Download size={12} />
-                  Download CSV
-                </button>
-                <button
-                  onClick={fetchLogs}
-                  disabled={isLogsLoading}
-                  className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 px-4 py-2 text-xs font-medium text-slate-300 disabled:opacity-50"
-                >
-                  <RefreshCw size={12} className={isLogsLoading ? "animate-spin" : ""} />
-                  {isLogsLoading ? "Loading..." : "Refresh"}
-                </button>
-              </div>
-            </div>
+        {activeView === "logs" && (
+          <div className="h-full border border-slate-700 rounded-lg overflow-hidden">
+            <GovernanceLogs />
           </div>
-
-          {/* Error State */}
-          {logsError && (
-            <div className="mx-6 mt-4 bg-red-950/50 border border-red-800 px-4 py-3 text-sm text-red-400">
-              Error: {logsError}
-            </div>
-          )}
-
-          {/* Table */}
-          <div className="flex-1 overflow-auto p-6">
-            <div className="border border-slate-800">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-slate-900 border-b border-slate-800">
-                    <th className="px-4 py-3 text-left text-slate-500 uppercase tracking-wider font-medium">Timestamp</th>
-                    <th className="px-4 py-3 text-left text-slate-500 uppercase tracking-wider font-medium">User Hash</th>
-                    <th className="px-4 py-3 text-left text-slate-500 uppercase tracking-wider font-medium">Model</th>
-                    <th className="px-4 py-3 text-center text-slate-500 uppercase tracking-wider font-medium">Status</th>
-                    <th className="px-4 py-3 text-center text-slate-500 uppercase tracking-wider font-medium">PII</th>
-                    <th className="px-4 py-3 text-right text-slate-500 uppercase tracking-wider font-medium">Latency</th>
-                    <th className="px-4 py-3 text-right text-slate-500 uppercase tracking-wider font-medium">Tokens</th>
-                    <th className="px-4 py-3 text-center text-slate-500 uppercase tracking-wider font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {isLogsLoading && logs.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="py-12 text-center text-slate-500">
-                        Loading audit records...
-                      </td>
-                    </tr>
-                  ) : logs.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="py-12 text-center text-slate-500">
-                        No audit records found.
-                      </td>
-                    </tr>
-                  ) : (
-                    logs.map((log, i) => (
-                      <tr
-                        key={log.request_id}
-                        className={`border-b border-slate-800/50 hover:bg-slate-900/50 ${i % 2 === 0 ? "bg-slate-950" : "bg-slate-900/20"
-                          }`}
-                      >
-                        <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap">
-                          {formatTimestamp(log.timestamp)}
-                        </td>
-                        <td className="px-4 py-2.5 text-slate-500">{log.user_hash}</td>
-                        <td className="px-4 py-2.5 text-cyan-400">{log.model}</td>
-                        <td className="px-4 py-2.5 text-center font-medium">{getStatusBadge(log.status_code)}</td>
-                        <td className="px-4 py-2.5 text-center">
-                          {log.pii_detected ? (
-                            <span title="PII Detected"><Shield size={14} className="inline text-red-500" /></span>
-                          ) : (
-                            <span className="text-slate-700">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-slate-400">{log.latency_ms.toFixed(0)}ms</td>
-                        <td className="px-4 py-2.5 text-right text-slate-400">{log.total_tokens}</td>
-                        <td className="px-4 py-2.5 text-center">
-                          <button
-                            onClick={() => deleteLog(log.request_id)}
-                            disabled={deletingLogId === log.request_id}
-                            className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-950/50 rounded transition-colors disabled:opacity-50"
-                            title="Delete log entry"
-                          >
-                            <Trash2 size={14} className={deletingLogId === log.request_id ? "animate-pulse" : ""} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* ===== KNOWLEDGE BASE VIEW ===== */}
-        <div className={`h-full overflow-y-auto p-6 ${activeView === "knowledge" ? "block" : "hidden"}`}>
-          <div className="mb-6">
-            <h2 className="flex items-center gap-2 text-sm font-bold text-slate-100 uppercase tracking-wider">
-              <FolderOpen size={16} className="text-cyan-500" />
-              Knowledge Base
-            </h2>
-            <p className="text-[11px] text-slate-500 mt-1">Document ingestion for RAG context — PDF only</p>
+        {activeView === "knowledge" && (
+          <div className="h-full border border-slate-700 rounded-lg overflow-hidden">
+            <KnowledgeBase />
           </div>
-
-          {/* Upload Zone */}
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setIsDragging(true);
-            }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`flex h-48 cursor-pointer flex-col items-center justify-center border-2 border-dashed transition ${isDragging
-              ? "border-cyan-500 bg-cyan-500/5"
-              : "border-slate-700 bg-slate-900/50 hover:border-slate-600"
-              }`}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf"
-              onChange={handleFileSelect}
-              className="hidden"
-            />
-            {isUploading ? (
-              <div className="flex flex-col items-center gap-3">
-                <div className="h-8 w-8 border-2 border-cyan-500 border-t-transparent animate-spin"></div>
-                <p className="text-xs text-slate-400 uppercase tracking-wider">Indexing document...</p>
-              </div>
-            ) : (
-              <>
-                <Upload size={32} className="mb-3 text-slate-600" />
-                <p className="text-sm text-slate-400">Drop PDF here or click to browse</p>
-                <p className="mt-1 text-[10px] text-slate-600 uppercase tracking-wider">
-                  Documents chunked and vectorized for retrieval
-                </p>
-              </>
-            )}
-          </div>
-
-          {/* Indexed Documents */}
-          {uploadedFiles.length > 0 && (
-            <div className="mt-6 border border-slate-800">
-              <div className="bg-slate-900 border-b border-slate-800 px-4 py-3">
-                <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  Indexed Documents ({uploadedFiles.length})
-                </h3>
-              </div>
-              <div className="divide-y divide-slate-800/50">
-                {uploadedFiles.map((file, i) => (
-                  <div key={i} className="flex items-center justify-between px-4 py-3 bg-slate-950">
-                    <div className="flex items-center gap-3">
-                      <CheckCircle2 size={14} className="text-emerald-500" />
-                      <span className="text-sm text-slate-300">{file.name}</span>
-                    </div>
-                    <span className="text-xs text-slate-500">{file.chunks} chunks</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        )}
 
         {/* ===== SETTINGS VIEW ===== */}
         <div className={`h-full overflow-y-auto p-6 ${activeView === "settings" ? "block" : "hidden"}`}>

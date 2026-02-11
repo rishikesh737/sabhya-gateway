@@ -43,6 +43,10 @@ class LocalRAGService:
             raise RuntimeError(f"ChromaDB initialization failed: {e}")
         
         self.ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        
+        # Data directory for storing uploaded files
+        self.data_dir = os.getenv("DATA_DIR", "./data")
+        os.makedirs(self.data_dir, exist_ok=True)
 
     def _is_meta_query(self, query_text: str) -> bool:
         """Check if query is asking about the document itself (meta-question)."""
@@ -186,6 +190,29 @@ class LocalRAGService:
     def get_last_sources(self) -> List[dict]:
         """Return source metadata from the last query for citations."""
         return self._last_sources.copy()
+
+    def delete_document(self, filename: str):
+        """Removes a document from the vector store and disk."""
+        try:
+            print(f"[RAG] Attempting to delete: {filename}")
+            
+            # 1. Remove from ChromaDB (The Brain)
+            self.collection.delete(where={"source": filename})
+            
+            # 2. Remove from Disk (The Storage)
+            file_path = os.path.join(self.data_dir, filename)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"[RAG] Deleted file from disk: {file_path}")
+                return True
+            else:
+                print(f"[RAG] File not found on disk: {file_path}")
+                # We return True if it's gone from disk (even if it was already gone)
+                return True
+                
+        except Exception as e:
+            print(f"[RAG] Error deleting document: {e}")
+            return False
 
 
 rag_service = LocalRAGService()

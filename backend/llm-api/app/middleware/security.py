@@ -107,6 +107,10 @@ def add_security_middleware(app: FastAPI) -> None:
             "X-Process-Time",
             "X-Request-ID",
             "X-Rate-Limit-Remaining",
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
+            "Retry-After",
         ],
         max_age=600,  # Cache preflight for 10 minutes
     )
