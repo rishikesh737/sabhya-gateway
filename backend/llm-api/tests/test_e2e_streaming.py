@@ -104,7 +104,9 @@ class TestStreamingAuditLog:
         logs = response.json()
 
         stream_logs = [
-            entry for entry in logs if entry["endpoint"] == "/v1/chat/completions/stream"
+            entry
+            for entry in logs
+            if entry["endpoint"] == "/v1/chat/completions/stream"
         ]
         assert len(stream_logs) > 0, "Audit log missing for streaming endpoint"
         assert stream_logs[0]["user_hash"] is not None

@@ -55,7 +55,12 @@ class Permissions(str, Enum):
 
 
 ROLE_PERMISSIONS: dict[str, Set[str]] = {
-    Roles.ADMIN: {Permissions.READ, Permissions.WRITE, Permissions.DELETE, Permissions.MANAGE_USERS},
+    Roles.ADMIN: {
+        Permissions.READ,
+        Permissions.WRITE,
+        Permissions.DELETE,
+        Permissions.MANAGE_USERS,
+    },
     Roles.USER: {Permissions.READ, Permissions.WRITE},
     Roles.VIEWER: {Permissions.READ},
     Roles.AUDITOR: {Permissions.READ, Permissions.AUDIT},
@@ -212,14 +217,14 @@ def verify_legacy_api_key(key: str) -> Optional[UserInfo]:
     """Verify a legacy API key against the configured list."""
     if not LEGACY_AUTH_ENABLED:
         return None
-    
+
     if key in LEGACY_API_KEYS:
         # Create a legacy user context
         return UserInfo(
             user_id=f"legacy_{hash_api_key(key)[:8]}",
             roles=[Roles.USER],
             permissions=ROLE_PERMISSIONS[Roles.USER],
-            is_legacy_key=True
+            is_legacy_key=True,
         )
     return None
 

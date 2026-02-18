@@ -16,7 +16,9 @@ class TestJWTTokens:
         """Test access token creation."""
         from app.auth.security import create_access_token
 
-        token = create_access_token(data={"sub": "user123", "roles": ["user", "viewer"]})
+        token = create_access_token(
+            data={"sub": "user123", "roles": ["user", "viewer"]}
+        )
 
         assert token is not None
         assert len(token) > 0
@@ -52,7 +54,8 @@ class TestJWTTokens:
 
         # Create already-expired token
         token = create_access_token(
-            data={"sub": "user123", "roles": ["user"]}, expires_delta=timedelta(seconds=-10)
+            data={"sub": "user123", "roles": ["user"]},
+            expires_delta=timedelta(seconds=-10),
         )
 
         with pytest.raises(HTTPException) as exc:

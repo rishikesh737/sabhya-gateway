@@ -1,0 +1,46 @@
+# =============================================================================
+# Sabhya AI - CI Requirements (lightweight, no heavy ML models)
+# =============================================================================
+# Excludes: presidio, spaCy model, chromadb, redis
+# PII and RAG tests are skipped in CI via pytest markers.
+# =============================================================================
+
+# Core Framework
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6
+
+# Data Validation
+pydantic>=2.9.0
+pydantic-settings>=2.3.0
+
+# Database
+sqlalchemy>=2.0.25
+
+# Logging
+structlog>=24.1.0
+python-dotenv>=1.0.1
+
+# HTTP Client
+httpx>=0.26.0
+
+# Rate Limiting
+slowapi>=0.1.9
+
+# JWT Authentication
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# Database Migrations
+alembic>=1.13.1
+
+# Monitoring
+psutil>=5.9.8
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.23.3
+
+email-validator
+argon2-cffi

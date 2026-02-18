@@ -35,11 +35,23 @@ from app.services.audit import (  # noqa: F401  # singleton initialized at impor
     AuditLogEntry,
     audit_service,
 )
-from app.services.content_safety import (
-    content_safety_service,  # noqa: F401  # singleton initialized at import for startup readiness
-)
-from app.services.pii_detection import pii_service
-from app.services.rag import rag_service
+
+try:
+    from app.services.content_safety import (
+        content_safety_service,  # noqa: F401
+    )
+except ImportError:
+    content_safety_service = None  # noqa: F841
+
+try:
+    from app.services.pii_detection import pii_service
+except ImportError:
+    pii_service = None
+
+try:
+    from app.services.rag import rag_service
+except ImportError:
+    rag_service = None
 
 log = structlog.get_logger()
 
