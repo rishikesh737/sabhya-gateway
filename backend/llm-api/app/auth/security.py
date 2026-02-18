@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 SECRET_KEY = os.getenv(
-    "SECRET_KEY", "***REMOVED***-key-change-in-production-minimum-32-chars"
+    "SECRET_KEY", "dev-secret-key-change-in-production-minimum-32-chars"
 )
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))

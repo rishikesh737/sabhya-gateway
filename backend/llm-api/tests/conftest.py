@@ -70,7 +70,7 @@ def admin_token():
     """Generate admin JWT token for testing."""
     from app.auth.security import create_access_token
 
-    return create_access_token("admin-user", ["admin"])
+    return create_access_token(data={"sub": "admin-user", "roles": ["admin"]})
 
 
 @pytest.fixture
@@ -78,7 +78,7 @@ def user_token():
     """Generate regular user JWT token for testing."""
     from app.auth.security import create_access_token
 
-    return create_access_token("regular-user", ["user"])
+    return create_access_token(data={"sub": "regular-user", "roles": ["user"]})
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def viewer_token():
     """Generate viewer JWT token for testing."""
     from app.auth.security import create_access_token
 
-    return create_access_token("viewer-user", ["viewer"])
+    return create_access_token(data={"sub": "viewer-user", "roles": ["viewer"]})
 
 
 # ============================================================================

@@ -1,9 +1,7 @@
 from dotenv import load_dotenv
 
-from app.routes.auth import router as auth_router
-
 load_dotenv()
-import os
+import os  # noqa: E402
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -30,7 +28,8 @@ from app.middleware.security import (
 )
 from app.models import AuditLog
 from app.prompts import build_system_prompt
-from app.routes.health import router as health_router
+from app.routes.auth import router as auth_router  # noqa: E402
+from app.routes.health import router as health_router  # noqa: E402
 from app.services.audit import (  # noqa: F401  # singleton initialized at import for startup readiness
     AuditLogEntry,
     audit_service,

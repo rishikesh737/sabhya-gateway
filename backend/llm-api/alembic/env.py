@@ -25,7 +25,7 @@ if config.config_file_name is not None:
 
 # Set the database URL from environment variable
 # Handle postgresql protocol for updated sqlalchemy versions if needed
-db_url = os.getenv("DATABASE_URL", "postgresql://sabhya:***REMOVED***@localhost:5432/sabhya_db")
+db_url = os.getenv("DATABASE_URL", "postgresql://sabhya:dev-secret@localhost:5432/sabhya_db")
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
 elif db_url.startswith("postgresql://") and "psycopg" not in db_url:
