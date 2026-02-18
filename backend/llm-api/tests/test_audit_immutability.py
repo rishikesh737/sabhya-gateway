@@ -11,13 +11,13 @@ Tests for cryptographic audit log guarantees:
 """
 
 import pytest
-from copy import deepcopy
 
 
 @pytest.fixture
 def audit_svc():
     """Create audit service with deterministic HMAC secret."""
     from app.services.audit import AuditService
+
     return AuditService(hmac_secret=b"test-immutability-secret-32chars!")
 
 
@@ -35,7 +35,7 @@ def sample_entry(audit_svc):
         prompt_tokens=100,
         completion_tokens=200,
         pii_result={"pii_detected": True, "entity_count": 1, "risk_level": "HIGH"},
-        auth_method="jwt"
+        auth_method="jwt",
     )
 
 
@@ -102,20 +102,27 @@ class TestHMACSignature:
     def test_signature_unique_per_entry(self, audit_svc):
         """Different entries must produce different signatures."""
         e1 = audit_svc.create_entry(
-            request_id="sig-1", user_id="u1",
-            endpoint="/a", method="GET",
-            status_code=200, latency_ms=10
+            request_id="sig-1",
+            user_id="u1",
+            endpoint="/a",
+            method="GET",
+            status_code=200,
+            latency_ms=10,
         )
         e2 = audit_svc.create_entry(
-            request_id="sig-2", user_id="u2",
-            endpoint="/b", method="POST",
-            status_code=201, latency_ms=20
+            request_id="sig-2",
+            user_id="u2",
+            endpoint="/b",
+            method="POST",
+            status_code=201,
+            latency_ms=20,
         )
         assert e1.signature != e2.signature
 
     def test_signature_changes_with_different_secret(self, sample_entry):
         """Same entry signed with different secret should differ."""
         from app.services.audit import AuditService
+
         alt_svc = AuditService(hmac_secret=b"completely-different-secret-32ch!")
         alt_sig = alt_svc._generate_signature(sample_entry)
         assert alt_sig != sample_entry.signature
@@ -124,8 +131,8 @@ class TestHMACSignature:
         """Forged signature should fail verification."""
         sample_entry.signature = "0" * 64  # Forged
         result = audit_svc.verify_integrity(sample_entry)
-        assert result['is_valid'] is False
-        assert result['signature_valid'] is False
+        assert result["is_valid"] is False
+        assert result["signature_valid"] is False
 
 
 class TestFieldTamperDetection:
@@ -148,7 +155,7 @@ class TestFieldTamperDetection:
         """Tampering field={field} should be detected."""
         setattr(sample_entry, field, fake_value)
         result = audit_svc.verify_integrity(sample_entry)
-        assert result['is_valid'] is False, f"Tamper on '{field}' was NOT detected"
+        assert result["is_valid"] is False, f"Tamper on '{field}' was NOT detected"
 
 
 class TestChainHashing:
@@ -157,34 +164,46 @@ class TestChainHashing:
     def test_chain_links_consecutive_entries(self, audit_svc):
         """Second entry's chain_hash should reference first entry's log_hash."""
         e1 = audit_svc.create_entry(
-            request_id="chain-1", user_id="u",
-            endpoint="/a", method="GET",
-            status_code=200, latency_ms=10
+            request_id="chain-1",
+            user_id="u",
+            endpoint="/a",
+            method="GET",
+            status_code=200,
+            latency_ms=10,
         )
         e2 = audit_svc.create_entry(
-            request_id="chain-2", user_id="u",
-            endpoint="/b", method="GET",
-            status_code=200, latency_ms=10,
-            previous_hash=e1.log_hash
+            request_id="chain-2",
+            user_id="u",
+            endpoint="/b",
+            method="GET",
+            status_code=200,
+            latency_ms=10,
+            previous_hash=e1.log_hash,
         )
         assert e2.chain_hash == e1.log_hash
 
     def test_chain_detects_gap(self, audit_svc):
         """Skipping an entry should break chain verification."""
         e1 = audit_svc.create_entry(
-            request_id="ch-1", user_id="u",
-            endpoint="/a", method="GET",
-            status_code=200, latency_ms=10
+            request_id="ch-1",
+            user_id="u",
+            endpoint="/a",
+            method="GET",
+            status_code=200,
+            latency_ms=10,
         )
         # Create e2 but simulate it being deleted by skipping directly to e3
         e3 = audit_svc.create_entry(
-            request_id="ch-3", user_id="u",
-            endpoint="/c", method="GET",
-            status_code=200, latency_ms=10,
-            previous_hash="deleted_entry_hash"
+            request_id="ch-3",
+            user_id="u",
+            endpoint="/c",
+            method="GET",
+            status_code=200,
+            latency_ms=10,
+            previous_hash="deleted_entry_hash",
         )
         result = audit_svc.verify_chain(e3, e1)
-        assert result['chain_valid'] is False
+        assert result["chain_valid"] is False
 
     def test_batch_verification_passes_for_valid_chain(self, audit_svc):
         """Batch of correctly linked entries should pass."""
@@ -192,17 +211,20 @@ class TestChainHashing:
         prev_hash = None
         for i in range(5):
             e = audit_svc.create_entry(
-                request_id=f"batch-{i}", user_id="u",
-                endpoint="/test", method="GET",
-                status_code=200, latency_ms=10,
-                previous_hash=prev_hash
+                request_id=f"batch-{i}",
+                user_id="u",
+                endpoint="/test",
+                method="GET",
+                status_code=200,
+                latency_ms=10,
+                previous_hash=prev_hash,
             )
             prev_hash = e.log_hash
             entries.append(e)
 
         result = audit_svc.verify_chain_batch(entries)
-        assert result['all_valid'] is True
-        assert result['entries_checked'] == 5
+        assert result["all_valid"] is True
+        assert result["entries_checked"] == 5
 
     def test_batch_detects_tampered_entry(self, audit_svc):
         """Batch verification should catch a tampered entry mid-chain."""
@@ -210,10 +232,13 @@ class TestChainHashing:
         prev_hash = None
         for i in range(4):
             e = audit_svc.create_entry(
-                request_id=f"btamp-{i}", user_id="u",
-                endpoint="/test", method="GET",
-                status_code=200, latency_ms=10,
-                previous_hash=prev_hash
+                request_id=f"btamp-{i}",
+                user_id="u",
+                endpoint="/test",
+                method="GET",
+                status_code=200,
+                latency_ms=10,
+                previous_hash=prev_hash,
             )
             prev_hash = e.log_hash
             entries.append(e)
@@ -222,8 +247,8 @@ class TestChainHashing:
         entries[2].status_code = 999
 
         result = audit_svc.verify_chain_batch(entries)
-        assert result['all_valid'] is False
-        assert len(result['individual_failures']) > 0
+        assert result["all_valid"] is False
+        assert len(result["individual_failures"]) > 0
 
 
 class TestImmutabilitySQLGeneration:
@@ -232,6 +257,7 @@ class TestImmutabilitySQLGeneration:
     def test_sql_statements_generated(self):
         """Immutability SQL should produce trigger statements."""
         from app.services.audit import get_immutability_sql
+
         statements = get_immutability_sql()
         assert len(statements) > 0
         combined = " ".join(statements).upper()

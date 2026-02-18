@@ -2,16 +2,16 @@
 Sabhya AI - JWT Authentication & RBAC Security Module
 """
 
-import os
 import logging
+import os
 from datetime import datetime, timedelta
-from typing import Optional, List, Set
 from enum import Enum
+from typing import List, Optional, Set
 
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
+from pydantic import BaseModel
 
 # JWT library
 try:
@@ -43,18 +43,22 @@ class Roles(str, Enum):
     ADMIN = "admin"
     USER = "user"
     VIEWER = "viewer"
+    AUDITOR = "auditor"
 
 
 class Permissions(str, Enum):
     READ = "read"
     WRITE = "write"
     DELETE = "delete"
+    AUDIT = "audit"
+    MANAGE_USERS = "manage_users"
 
 
 ROLE_PERMISSIONS: dict[str, Set[str]] = {
-    Roles.ADMIN: {Permissions.READ, Permissions.WRITE, Permissions.DELETE},
+    Roles.ADMIN: {Permissions.READ, Permissions.WRITE, Permissions.DELETE, Permissions.MANAGE_USERS},
     Roles.USER: {Permissions.READ, Permissions.WRITE},
     Roles.VIEWER: {Permissions.READ},
+    Roles.AUDITOR: {Permissions.READ, Permissions.AUDIT},
 }
 
 
@@ -66,7 +70,7 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     sub: str
-    roles: List[str]
+    roles: List[str] = []
     exp: int
     iat: int
     token_type: str = "access"
@@ -123,7 +127,7 @@ def verify_token(token: str) -> TokenData:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
-        roles: List[str] = payload.get("roles", [])
+        # roles not used here, only sub is needed
 
         if user_id is None:
             raise credentials_exception
@@ -200,9 +204,24 @@ def require_permission(*required_permissions: str):
 
 
 def hash_api_key(key: str) -> str:
-    import hashlib
+    """Hash an API key using the configured password context."""
+    return pwd_context.hash(key)
 
-    return hashlib.sha256(key.encode()).hexdigest()[:8]
+
+def verify_legacy_api_key(key: str) -> Optional[UserInfo]:
+    """Verify a legacy API key against the configured list."""
+    if not LEGACY_AUTH_ENABLED:
+        return None
+    
+    if key in LEGACY_API_KEYS:
+        # Create a legacy user context
+        return UserInfo(
+            user_id=f"legacy_{hash_api_key(key)[:8]}",
+            roles=[Roles.USER],
+            permissions=ROLE_PERMISSIONS[Roles.USER],
+            is_legacy_key=True
+        )
+    return None
 
 
 # ============================================================================

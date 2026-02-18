@@ -1,19 +1,19 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { api } from '../lib/api';
-import { ChatResponse } from '../lib/types';
+import { ChatResponse, Source } from '../lib/types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 const InteractionPanel: React.FC = () => {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Array<{
-    role: string, 
-    content: string, 
-    sources?: any[],
+    role: string,
+    content: string,
+    sources?: Source[],
     meta?: { latency: number, model: string, tokens: number }
   }>>([]);
   const [loading, setLoading] = useState(false);
-  const [expandedThinking, setExpandedThinking] = useState<number[]>([]); 
+  const [expandedThinking, setExpandedThinking] = useState<number[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // 1. LOAD HISTORY ON MOUNT
@@ -39,7 +39,7 @@ const InteractionPanel: React.FC = () => {
   };
 
   const toggleThinking = (index: number) => {
-    setExpandedThinking(prev => 
+    setExpandedThinking(prev =>
       prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]
     );
   };
@@ -68,7 +68,7 @@ const InteractionPanel: React.FC = () => {
     setInput('');
     setLoading(true);
 
-    const startTime = Date.now();
+    const startTime = new Date().getTime();
 
     try {
       const history = messages.slice(-5).map(m => ({ role: m.role, content: m.content }));
@@ -76,28 +76,28 @@ const InteractionPanel: React.FC = () => {
 
       const response: ChatResponse = await api.chat({
         model: "mistral:7b-instruct-q4_K_M",
-        messages: history
+        messages: history.map((m: { role: string; content: string }) => ({ role: m.role as "user" | "assistant" | "system", content: m.content }))
       });
 
-      const latency = Date.now() - startTime;
+      const latency = new Date().getTime() - startTime;
 
-      const uniqueSources = response.sources ? Array.from(new Set(response.sources.map((s: any) => s.source))).map(source => {
-        return response.sources.find((s: any) => s.source === source);
-      }) : [];
+      const uniqueSources: Source[] = response.sources ? Array.from(new Set(response.sources.map((s: Source) => s.source))).map(source => {
+        return response.sources?.find((s: Source) => s.source === source);
+      }).filter((s): s is Source => s !== undefined) : [];
 
       const assistantMessage = {
         role: 'assistant',
         content: response.choices[0].message.content,
         sources: uniqueSources,
         meta: {
-            latency: latency,
-            model: response.model || "mistral:7b",
-            tokens: response.usage ? response.usage.completion_tokens : 0
+          latency: latency,
+          model: response.model || "mistral:7b",
+          tokens: response.usage ? response.usage.completion_tokens : 0
         }
       };
 
       setMessages(prev => [...prev, assistantMessage]);
-    } catch (error) {
+    } catch (_error) {
       setMessages(prev => [...prev, { role: 'assistant', content: "⚠️ Error: Failed to connect to Sabhya AI backend." }]);
     } finally {
       setLoading(false);
@@ -120,22 +120,21 @@ const InteractionPanel: React.FC = () => {
             <p>Ready to govern. Type a prompt below.</p>
           </div>
         )}
-        
+
         {messages.map((msg, idx) => (
           <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-            
-            <div className={`max-w-[85%] rounded-lg p-4 ${
-              msg.role === 'user' 
-                ? 'bg-[#1f2937] border border-gray-700 text-gray-200' 
-                : 'bg-[#161b22] border border-gray-800 text-gray-300'
-            }`}>
+
+            <div className={`max-w-[85%] rounded-lg p-4 ${msg.role === 'user'
+              ? 'bg-[#1f2937] border border-gray-700 text-gray-200'
+              : 'bg-[#161b22] border border-gray-800 text-gray-300'
+              }`}>
               <div className="text-[10px] font-bold mb-2 opacity-50 uppercase tracking-wider flex justify-between items-center gap-4">
                 <span>{msg.role === 'user' ? 'YOU' : 'SABHYA AI'}</span>
-                
+
                 {msg.role === 'assistant' && (
                   <div className="flex gap-2">
                     {/* Copy Button */}
-                    <button 
+                    <button
                       onClick={() => copyToClipboard(msg.content)}
                       className="flex items-center gap-1 text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
                       title="Copy Response"
@@ -145,7 +144,7 @@ const InteractionPanel: React.FC = () => {
 
                     {/* Show Process Button */}
                     {msg.meta && (
-                      <button 
+                      <button
                         onClick={() => toggleThinking(idx)}
                         className="flex items-center gap-1 text-[10px] text-emerald-500 hover:text-emerald-400 transition-colors"
                       >
@@ -155,7 +154,7 @@ const InteractionPanel: React.FC = () => {
                   </div>
                 )}
               </div>
-              
+
               {expandedThinking.includes(idx) && msg.meta && (
                 <div className="mb-4 bg-[#0d1117] rounded p-3 border-l-2 border-emerald-500 text-xs font-mono text-gray-400 animate-fade-in">
                   <div className="font-bold text-emerald-500 mb-2">GOVERNANCE TRACE:</div>
@@ -181,7 +180,7 @@ const InteractionPanel: React.FC = () => {
                     <span>📚</span> KNOWLEDGE SOURCES REFERENCED
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {msg.sources.map((src: any, i: number) => (
+                    {msg.sources.map((src: Source, i: number) => (
                       <span key={i} className="px-2 py-1 bg-emerald-900/20 text-emerald-400 text-[10px] rounded border border-emerald-900/50 truncate max-w-[200px]" title={src.source}>
                         {src.source}
                       </span>
@@ -196,8 +195,8 @@ const InteractionPanel: React.FC = () => {
         {loading && (
           <div className="flex justify-start animate-fade-in">
             <div className="bg-[#161b22] border border-emerald-900/30 rounded-lg p-4 max-w-[80%] shadow-[0_0_15px_rgba(16,185,129,0.1)]">
-               <div className="text-[10px] font-bold mb-2 text-emerald-500 uppercase tracking-wider flex items-center gap-2">
-                 <span className="animate-spin">⚙️</span> PROCESSING
+              <div className="text-[10px] font-bold mb-2 text-emerald-500 uppercase tracking-wider flex items-center gap-2">
+                <span className="animate-spin">⚙️</span> PROCESSING
               </div>
               <div className="flex items-center gap-3 text-gray-400 text-sm font-mono">
                 <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping"></span>
@@ -219,15 +218,15 @@ const InteractionPanel: React.FC = () => {
             className="w-full bg-[#0d1117] border border-gray-700 rounded-md p-3 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none resize-none h-24 text-gray-200 placeholder-gray-600"
           />
           <div className="absolute bottom-3 right-3 flex gap-2">
-            <button 
-              onClick={clearChat} 
+            <button
+              onClick={clearChat}
               className="text-xs text-red-400 hover:text-red-300 px-3 py-1.5 border border-red-900/30 rounded hover:bg-red-900/20 transition-all"
             >
               🗑️ CLEAR CHAT
             </button>
-            <button 
-              onClick={handleSubmit} 
-              disabled={loading || !input.trim()} 
+            <button
+              onClick={handleSubmit}
+              disabled={loading || !input.trim()}
               className="bg-emerald-600/10 text-emerald-400 border border-emerald-600/50 px-4 py-1.5 rounded text-xs font-bold hover:bg-emerald-600 hover:text-white transition-all disabled:opacity-50"
             >
               🚀 SUBMIT REQUEST

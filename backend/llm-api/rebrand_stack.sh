@@ -6,6 +6,18 @@
 
 set -e
 
+# Load environment variables from root .env
+ENV_FILE="$(cd "$(dirname "$0")/../.." && pwd)/.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a; source "$ENV_FILE"; set +a
+else
+    echo "⚠️  No .env file found at $ENV_FILE"
+    echo "   Copy .env.example to .env and configure it first."
+    exit 1
+fi
+
+: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}"
+
 echo "=============================================="
 echo "🔄 SABHYA AI STACK MIGRATION (v2)"
 echo "=============================================="
@@ -44,7 +56,7 @@ echo "🗄️  Starting Sabhya DB (PostgreSQL)..."
 podman run -d --name sabhya-db --network host \
   -v $(pwd)/pg_data:/var/lib/postgresql/data:Z \
   -e POSTGRES_USER=sabhya \
-  -e POSTGRES_PASSWORD=***REMOVED*** \
+  -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
   -e POSTGRES_DB=sabhya_db \
   docker.io/postgres:15-alpine
 sleep 5
@@ -55,9 +67,9 @@ echo "🤖 Starting LLM-API (Sabhya AI Backend)..."
 podman run -d --name llm-api --network host \
   -v $(pwd)/data:/app/data:Z \
   -v $(pwd)/chroma_data:/app/chroma_data:Z \
-  -e API_KEYS=dev-key-1,dev-key-2 \
+  -e API_KEYS="${API_KEYS:-}" \
   -e OLLAMA_BASE_URL=http://localhost:11434 \
-  -e DATABASE_URL="postgresql://sabhya:***REMOVED***@localhost:5432/sabhya_db" \
+  -e DATABASE_URL="postgresql://sabhya:${POSTGRES_PASSWORD}@localhost:5432/sabhya_db" \
   localhost/llm-api:stable
 sleep 5
 echo "✓ LLM-API started with Sabhya DB connection"

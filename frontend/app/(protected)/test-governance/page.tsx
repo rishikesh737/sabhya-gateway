@@ -38,7 +38,6 @@ const mockAuditClean: AuditLog = {
 
 export default function GovernanceTestPage() {
     const [selectedScenario, setSelectedScenario] = useState<string>("clean");
-    const [sidebarOpen, setSidebarOpen] = useState(true);
 
     // Scenario Logic
     let currentLog: AuditLog | null = null;

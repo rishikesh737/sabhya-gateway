@@ -32,12 +32,12 @@ const GovernanceLogs: React.FC = () => {
       new Date(log.timestamp).toISOString(),
       log.endpoint,
       log.status_code,
-      Math.round(log.latency_ms),
+      Math.round(log.latency_ms || 0),
       log.total_tokens || 0,
       log.pii_detected ? "PII BLOCKED" : "SAFE",
       log.request_id
     ].join(","));
-    
+
     const csvContent = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csvContent], { type: "text/csv" });
     const url = window.URL.createObjectURL(blob);
@@ -55,7 +55,7 @@ const GovernanceLogs: React.FC = () => {
           ⚡ Live Governance Audit <span className="text-xs bg-gray-800 px-2 py-1 rounded-full text-gray-400 ml-2">{logs.length} Events</span>
         </h2>
         <div className="flex gap-2">
-          <button 
+          <button
             onClick={downloadCSV}
             disabled={logs.length === 0}
             className="flex items-center gap-2 px-3 py-1.5 bg-[#1f2937] hover:bg-[#374151] text-xs font-bold text-emerald-400 border border-emerald-500/30 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -89,7 +89,7 @@ const GovernanceLogs: React.FC = () => {
                   <td className="p-3 font-mono text-xs text-gray-500">{new Date(log.timestamp).toLocaleString()}</td>
                   <td className="p-3 font-mono text-xs text-blue-400">{log.endpoint}</td>
                   <td className="p-3"><span className={`px-2 py-0.5 rounded text-xs font-medium ${log.status_code === 200 ? 'bg-emerald-900/30 text-emerald-400' : 'bg-red-900/30 text-red-400'}`}>{log.status_code}</span></td>
-                  <td className="p-3 font-mono text-xs">{Math.round(log.latency_ms)}ms</td>
+                  <td className="p-3 font-mono text-xs">{Math.round(log.latency_ms || 0)}ms</td>
                   <td className="p-3 font-mono text-xs">{log.total_tokens || '-'}</td>
                   <td className="p-3">{log.pii_detected ? <span className="text-red-400 text-xs">🚫 PII BLOCKED</span> : <span className="text-emerald-600 text-xs">✔ SAFE</span>}</td>
                 </tr>

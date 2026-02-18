@@ -2,20 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { AuditLog } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Activity, Ban, Clock, CheckCircle } from "lucide-react";
+import { Activity, Ban, Clock } from "lucide-react";
 
 export function GovernanceStats() {
     const [logs, setLogs] = useState<AuditLog[]>([]);
-    const [loading, setLoading] = useState(true);
+    // TODO: implement loading skeleton for GovernanceStats when data
+    // is being fetched. Re-add loading state when building the skeleton.
+
 
     const fetchLogs = async () => {
         try {
-            const data = await api.getRecentLogs(100);
+            const data = await api.getAuditLogs();
             setLogs(data);
         } catch (e) {
             console.error("Failed to fetch logs", e);
         } finally {
-            setLoading(false);
         }
     };
 

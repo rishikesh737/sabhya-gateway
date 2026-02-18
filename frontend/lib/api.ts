@@ -5,17 +5,17 @@ const API_URL = ""; // Empty because we rely on Next.js proxy in next.config.mjs
 class ApiService {
     private getHeaders(isFormData: boolean = false): HeadersInit {
         const token = typeof window !== 'undefined' ? localStorage.getItem("token") : null;
-        const headers: any = {};
-        
+        const headers: Record<string, string> = {};
+
         if (token) {
             headers["Authorization"] = `Bearer ${token}`;
         }
-        
+
         // Do NOT set Content-Type for FormData; browser sets it with boundary automatically
         if (!isFormData) {
             headers["Content-Type"] = "application/json";
         }
-        
+
         return headers;
     }
 
@@ -63,7 +63,7 @@ class ApiService {
         });
     }
 
-    async uploadDocument(file: File): Promise<any> {
+    async uploadDocument(file: File): Promise<unknown> {
         const formData = new FormData();
         formData.append("file", file);
 
@@ -74,7 +74,7 @@ class ApiService {
         });
     }
 
-    async deleteDocument(filename: string): Promise<any> {
+    async deleteDocument(filename: string): Promise<unknown> {
         return this.fetch(`/rag/documents/${encodeURIComponent(filename)}`, {
             method: "DELETE",
             headers: this.getHeaders(),

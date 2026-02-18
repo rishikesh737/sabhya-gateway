@@ -111,11 +111,7 @@ export default function SabhyaDashboard() {
     }
   }, [chatHistory]);
 
-  // ===== HYDRATION SAFETY (Prevent SSR/Client mismatch) =====
-  const [isMounted, setIsMounted] = useState(false);
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
+
 
 
   // ===== SUBMIT REQUEST WITH STREAMING =====
@@ -125,7 +121,7 @@ export default function SabhyaDashboard() {
     const userMessage: ChatMessage = {
       role: "user",
       content: promptInput,
-      timestamp: Date.now(),
+      timestamp: new Date().getTime(),
     };
 
     // Add user message to history
@@ -231,7 +227,7 @@ export default function SabhyaDashboard() {
                     role: "assistant",
                     content: fullContent,
                     thought_process: thoughtProcess,
-                    timestamp: Date.now(),
+                    timestamp: new Date().getTime(),
                     sources: sources.length > 0 ? sources : undefined,
                   };
                   setChatHistory((prev) => [...prev, assistantMessage]);
@@ -254,7 +250,7 @@ export default function SabhyaDashboard() {
           }
         }
       }
-    } catch (err: unknown) {
+    } catch (_err: unknown) {
       setProcessingState("ERROR");
       setResponseOutput("ERROR: CONNECTION FAILED — Backend unreachable.");
       setIsStreaming(false);
@@ -476,7 +472,7 @@ export default function SabhyaDashboard() {
               >
                 {chatHistory.length === 0 && !isStreaming && (
                   <div className="text-slate-500 text-sm italic">
-                    // Conversation will appear here. Send a message to begin.
+                    {/* Conversation will appear here. Send a message to begin. */}
                   </div>
                 )}
 

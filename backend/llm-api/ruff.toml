@@ -1,0 +1,20 @@
+# Ruff configuration for Sabhya AI Backend
+# https://docs.astral.sh/ruff/configuration/
+
+[lint]
+# Enable standard rules: errors, warnings, pyflakes, isort
+select = ["E", "F", "W", "I"]
+
+# Ignore rules that conflict with the existing codebase style
+ignore = [
+    "E501",   # Line too long — enforced by formatter instead
+    "E402",   # Module-level import not at top — needed for dotenv loading
+]
+
+[lint.isort]
+known-first-party = ["app"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

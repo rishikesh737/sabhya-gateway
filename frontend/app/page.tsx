@@ -57,7 +57,7 @@ export default function Home() {
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
             CONNECTED: LOCALHOST
           </div>
-          <button 
+          <button
             onClick={() => {
               localStorage.removeItem("token");
               router.push("/login");
@@ -101,15 +101,21 @@ export default function Home() {
   );
 }
 
-function SidebarItem({ active, onClick, icon, label }: any) {
+interface SidebarItemProps {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}
+
+function SidebarItem({ active, onClick, icon, label }: SidebarItemProps) {
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-bold tracking-wide transition-all duration-200 ${
-        active 
-          ? "bg-emerald-600/10 text-emerald-400 border-l-2 border-emerald-500" 
-          : "text-gray-400 hover:bg-[#1f2937] hover:text-gray-200 border-l-2 border-transparent"
-      }`}
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-bold tracking-wide transition-all duration-200 ${active
+        ? "bg-emerald-600/10 text-emerald-400 border-l-2 border-emerald-500"
+        : "text-gray-400 hover:bg-[#1f2937] hover:text-gray-200 border-l-2 border-transparent"
+        }`}
     >
       <span className="text-sm opacity-80">{icon}</span>
       {label}

@@ -1,7 +1,6 @@
-import { AlertCircle, CheckCircle2, ShieldAlert, Shield, ServerCrash, Clock } from "lucide-react";
+import { CheckCircle2, ShieldAlert, Shield, ServerCrash, Clock } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { ChatResponse, AuditLog } from "@/lib/types";
-import { GatewayError } from "@/lib/api";
+import { ChatResponse, AuditLog, GatewayError } from "@/lib/types";
 
 interface ResponseViewerProps {
     response: ChatResponse | null;

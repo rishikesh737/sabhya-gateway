@@ -4,8 +4,9 @@ Blocks harmful, dangerous, or policy-violating content.
 """
 
 import re
-from typing import Dict, List, Optional
 from dataclasses import dataclass
+from typing import Dict, List, Optional
+
 import structlog
 
 log = structlog.get_logger()
@@ -14,6 +15,7 @@ log = structlog.get_logger()
 @dataclass
 class ContentCheckResult:
     """Result of content safety check."""
+
     is_safe: bool
     blocked_reason: Optional[str] = None
     matched_category: Optional[str] = None
@@ -79,63 +81,73 @@ HARMFUL_CATEGORIES = {
 
 # Quick block keywords (immediate rejection without regex)
 BLOCK_KEYWORDS = [
-    "make a bomb", "build a bomb", "how to make bomb",
-    "make explosives", "build explosives",
-    "synthesize meth", "cook meth", "make fentanyl",
-    "child porn", "child pornography",
-    "hack into", "break into computer", "steal password",
-    "how to hack", "generate malware",
+    "make a bomb",
+    "build a bomb",
+    "how to make bomb",
+    "make explosives",
+    "build explosives",
+    "synthesize meth",
+    "cook meth",
+    "make fentanyl",
+    "child porn",
+    "child pornography",
+    "hack into",
+    "break into computer",
+    "steal password",
+    "how to hack",
+    "generate malware",
 ]
 
 
 class ContentSafetyService:
     """Service to check content for harmful, dangerous, or policy-violating material."""
-    
+
     def __init__(self, enabled: bool = True):
         self.enabled = enabled
         self._compile_patterns()
-        log.info("content_safety_initialized", enabled=enabled, categories=len(HARMFUL_CATEGORIES))
-    
+        log.info(
+            "content_safety_initialized",
+            enabled=enabled,
+            categories=len(HARMFUL_CATEGORIES),
+        )
+
     def _compile_patterns(self):
         """Pre-compile regex patterns for performance."""
         self._compiled_patterns: Dict[str, List[re.Pattern]] = {}
         for category, config in HARMFUL_CATEGORIES.items():
             self._compiled_patterns[category] = [
-                re.compile(pattern, re.IGNORECASE) 
-                for pattern in config["patterns"]
+                re.compile(pattern, re.IGNORECASE) for pattern in config["patterns"]
             ]
-    
+
     def check_content(self, text: str) -> ContentCheckResult:
         """
         Check if the content contains harmful material.
-        
+
         Returns:
             ContentCheckResult with is_safe=False if harmful content detected.
         """
         if not self.enabled:
             return ContentCheckResult(is_safe=True)
-        
+
         if not text or not text.strip():
             return ContentCheckResult(is_safe=True)
-        
+
         text_lower = text.lower()
-        
+
         # Quick keyword check first (fast path)
         for keyword in BLOCK_KEYWORDS:
             if keyword in text_lower:
                 log.warning(
-                    "content_blocked_keyword",
-                    keyword=keyword,
-                    text_preview=text[:50]
+                    "content_blocked_keyword", keyword=keyword, text_preview=text[:50]
                 )
                 return ContentCheckResult(
                     is_safe=False,
                     blocked_reason="This request contains content that violates our usage policy.",
                     matched_category="blocked_keyword",
                     matched_pattern=keyword,
-                    risk_score=1.0
+                    risk_score=1.0,
                 )
-        
+
         # Regex pattern matching
         for category, patterns in self._compiled_patterns.items():
             config = HARMFUL_CATEGORIES[category]
@@ -147,18 +159,18 @@ class ContentSafetyService:
                         category=category,
                         pattern=pattern.pattern[:50],
                         matched_text=match.group(0)[:30],
-                        text_preview=text[:50]
+                        text_preview=text[:50],
                     )
                     return ContentCheckResult(
                         is_safe=False,
                         blocked_reason=f"This request was blocked: {config['description']}",
                         matched_category=category,
                         matched_pattern=pattern.pattern,
-                        risk_score=config["risk_weight"]
+                        risk_score=config["risk_weight"],
                     )
-        
+
         return ContentCheckResult(is_safe=True)
-    
+
     def is_safe(self, text: str) -> bool:
         """Simple boolean check for content safety."""
         return self.check_content(text).is_safe

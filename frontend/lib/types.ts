@@ -10,6 +10,7 @@ export interface AuditLog {
     total_tokens: number | null;
     pii_detected: boolean | null;
     request_blocked: boolean | null;
+    endpoint?: string;
 }
 
 export interface ChatMessage {
@@ -38,6 +39,17 @@ export interface ChatResponse {
         completion_tokens: number;
         total_tokens: number;
     };
+    sources?: Source[];
+}
+
+export interface Source {
+    source: string;
+    [key: string]: unknown;
+}
+
+export interface GatewayError {
+    type: "PII_BLOCKED" | "RATE_LIMIT" | "UPSTREAM" | "POLICY" | "UNKNOWN";
+    message: string;
 }
 
 export interface GovernanceMetrics {

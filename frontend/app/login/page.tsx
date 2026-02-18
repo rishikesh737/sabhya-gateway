@@ -4,8 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("***REMOVED***");
-  const [password, setPassword] = useState("***REMOVED***");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
@@ -36,7 +36,7 @@ export default function LoginPage() {
 
       // 3. Redirect to Dashboard
       router.push("/");
-    } catch (err) {
+    } catch (_err) {
       setError("Login failed. Please check your email and password.");
     } finally {
       setLoading(false);

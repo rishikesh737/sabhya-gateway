@@ -1,18 +1,18 @@
-from datetime import timedelta
+import uuid
+
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
-from app.database import get_db
-from app.models import User
+from sqlalchemy.orm import Session
+
 from app.auth.security import (
     create_access_token,
-    verify_password,
     get_password_hash,
-    ACCESS_TOKEN_EXPIRE_MINUTES,
+    verify_password,
 )
-import structlog
-import uuid
+from app.database import get_db
+from app.models import User
 
 log = structlog.get_logger()
 router = APIRouter()
@@ -89,7 +89,6 @@ def login_for_access_token(
         )
 
     # 3. Create Token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email, "roles": [user.role]},
     )

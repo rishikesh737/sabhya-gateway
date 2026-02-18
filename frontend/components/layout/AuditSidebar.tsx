@@ -1,8 +1,8 @@
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Badge } from "@/components/ui/badge";
+
 import { AuditLog } from "@/lib/types";
-import { Copy, ShieldAlert, ShieldCheck, Clock } from "lucide-react";
+import { ShieldAlert, ShieldCheck, Clock } from "lucide-react";
 
 interface AuditSidebarProps {
     open: boolean;

@@ -13,8 +13,6 @@ Tests for HTTP security headers middleware:
 - X-Request-ID
 """
 
-import pytest
-
 
 class TestSecurityHeaders:
     """Verify that all security headers are present on responses."""
@@ -22,8 +20,7 @@ class TestSecurityHeaders:
     def _get_headers(self, test_client, user_token):
         """Helper: make authenticated request and return response headers."""
         response = test_client.get(
-            "/health/live",
-            headers={"Authorization": f"Bearer {user_token}"}
+            "/health/live", headers={"Authorization": f"Bearer {user_token}"}
         )
         assert response.status_code == 200
         return response.headers
@@ -96,8 +93,9 @@ class TestSecurityHeaders:
     def test_no_wildcard_cors(self, test_client, user_token):
         """CORS should not use wildcard origins."""
         from app.middleware.security import validate_security_config
+
         config = validate_security_config()
-        origins = config['config']['cors_origins']
+        origins = config["config"]["cors_origins"]
         assert "*" not in origins, "CORS wildcard (*) detected — unsafe for production"
 
 
@@ -107,14 +105,15 @@ class TestSecurityConfigValidation:
     def test_validate_returns_warnings_for_weak_config(self):
         """Validator should warn about weak config."""
         import os
+
         from app.middleware.security import validate_security_config
 
         old_key = os.environ.get("SECRET_KEY", "")
         os.environ["SECRET_KEY"] = "short"
         try:
             result = validate_security_config()
-            assert result['is_secure'] is False
-            warning_texts = " ".join(result['warnings'])
+            assert result["is_secure"] is False
+            warning_texts = " ".join(result["warnings"])
             assert "SHORT" in warning_texts.upper() or "short" in warning_texts.lower()
         finally:
             os.environ["SECRET_KEY"] = old_key
@@ -122,13 +121,20 @@ class TestSecurityConfigValidation:
     def test_validate_passes_with_secure_config(self):
         """Validator should pass with properly configured secrets."""
         import os
+
         from app.middleware.security import validate_security_config
 
         old_key = os.environ.get("SECRET_KEY", "")
-        os.environ["SECRET_KEY"] = "a-very-secure-production-key-that-is-at-least-32-characters-long"
+        os.environ["SECRET_KEY"] = (
+            "a-very-secure-production-key-that-is-at-least-32-characters-long"
+        )
         try:
             result = validate_security_config()
-            short_warnings = [w for w in result['warnings'] if 'SHORT' in w.upper() or 'short' in w.lower()]
+            short_warnings = [
+                w
+                for w in result["warnings"]
+                if "SHORT" in w.upper() or "short" in w.lower()
+            ]
             assert len(short_warnings) == 0
         finally:
             os.environ["SECRET_KEY"] = old_key

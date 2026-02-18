@@ -10,14 +10,16 @@ Tests for the hybrid Presidio + Regex PII detection pipeline:
 - Multiple entities in single input
 """
 
-import pytest
 import os
+
+import pytest
 
 
 @pytest.fixture
 def pii_svc():
     """Create PII detection service instance."""
     from app.services.pii_detection import PIIDetectionService
+
     return PIIDetectionService()
 
 
@@ -27,6 +29,7 @@ def blocking_pii_svc():
     old_val = os.environ.get("PII_BLOCKING_MODE", "FLAG_ONLY")
     os.environ["PII_BLOCKING_MODE"] = "BLOCK_HIGH_RISK"
     from app.services.pii_detection import PIIDetectionService
+
     svc = PIIDetectionService()
     yield svc
     os.environ["PII_BLOCKING_MODE"] = old_val
@@ -35,6 +38,7 @@ def blocking_pii_svc():
 # =========================================================================
 # REGEX ENGINE TESTS — These must ALWAYS pass regardless of Presidio
 # =========================================================================
+
 
 class TestRegexEmailDetection:
     """Test email detection via regex fallback."""
@@ -110,6 +114,7 @@ class TestRegexPhoneDetection:
 # RISK CLASSIFICATION TESTS
 # =========================================================================
 
+
 class TestRiskClassification:
     """Test that entity types map to correct risk levels."""
 
@@ -135,6 +140,7 @@ class TestRiskClassification:
 # =========================================================================
 # EDGE CASES
 # =========================================================================
+
 
 class TestEdgeCases:
     """Test edge cases and clean input handling."""
@@ -191,7 +197,9 @@ class TestBlockingMode:
         result = blocking_pii_svc.detect_pii("SSN: 123-45-6789")
         assert result["pii_detected"] is True
         # In BLOCK mode, action should be 'BLOCK' for HIGH risk
-        assert result.get("action") == "BLOCK" or result.get("should_block", False) is True
+        assert (
+            result.get("action") == "BLOCK" or result.get("should_block", False) is True
+        )
 
 
 class TestRedaction:
@@ -206,4 +214,8 @@ class TestRedaction:
                 # Text should NOT contain the full email
                 assert entity["text"] != "john.doe@example.com"
                 # Should contain redaction markers (*, etc.)
-                assert "*" in entity["text"] or "..." in entity["text"] or len(entity["text"]) < len("john.doe@example.com")
+                assert (
+                    "*" in entity["text"]
+                    or "..." in entity["text"]
+                    or len(entity["text"]) < len("john.doe@example.com")
+                )

@@ -52,10 +52,23 @@ This will:
 2. Start PostgreSQL, ChromaDB, and Ollama.
 3. Launch the API (Port 8000) and UI (Port 3000).
 
-### 2. Access the Dashboard
+### 2. Configure Environment
+Copy the example environment file and update values for your setup:
+```bash
+cp .env.example .env
+# Edit .env with your database password, secret keys, etc.
+```
+
+### 3. Access the Dashboard
 Open **[http://localhost:3000](http://localhost:3000)**
-- **Login**: `***REMOVED***`
-- **Password**: `***REMOVED***`
+
+Register a new user via the API:
+```bash
+curl -X POST http://localhost:8000/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "you@example.com", "password": "your-secure-password", "full_name": "Your Name"}'
+```
+Then log in with those credentials on the dashboard.
 
 ---
 

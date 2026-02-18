@@ -7,10 +7,12 @@ Uses lazy initialization to avoid startup failures when DB is unavailable.
 
 import os
 import time
+from typing import Generator
+
 import structlog
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, Session
-from typing import Generator, Optional
+from sqlalchemy.orm import Session, sessionmaker
+
 from app.models import Base
 
 log = structlog.get_logger()
@@ -18,8 +20,7 @@ log = structlog.get_logger()
 # Database URL from environment
 # Note: psycopg (v3) requires "postgresql+psycopg://" scheme
 _raw_url = os.getenv(
-    "DATABASE_URL",
-    "postgresql://sabhya:***REMOVED***@localhost:5432/sabhya_db"
+    "DATABASE_URL", "postgresql://sabhya:***REMOVED***@localhost:5432/sabhya_db"
 )
 
 # Convert to psycopg3 driver URL if using postgres
@@ -49,7 +50,7 @@ def get_engine():
             DATABASE_URL,
             connect_args=connect_args,
             pool_pre_ping=True,  # Check connection health before use
-            pool_recycle=300,    # Recycle connections after 5 minutes
+            pool_recycle=300,  # Recycle connections after 5 minutes
         )
         log.info("database_engine_created", url=DATABASE_URL[:30] + "...")
     return _engine
@@ -78,9 +79,7 @@ def get_session_factory():
     global _SessionLocal
     if _SessionLocal is None:
         _SessionLocal = sessionmaker(
-            autocommit=False,
-            autoflush=False,
-            bind=get_engine()
+            autocommit=False, autoflush=False, bind=get_engine()
         )
     return _SessionLocal
 
@@ -99,7 +98,7 @@ def init_db():
 def get_db() -> Generator[Session, None, None]:
     """
     Dependency injection for FastAPI routes.
-    
+
     Usage:
         @app.get("/endpoint")
         async def endpoint(db: Session = Depends(get_db)):
@@ -116,7 +115,7 @@ def get_db() -> Generator[Session, None, None]:
 def check_db_health() -> dict:
     """
     Check database health for health endpoints.
-    
+
     Returns:
         {'healthy': bool, 'message': str}
     """
@@ -124,9 +123,9 @@ def check_db_health() -> dict:
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        return {'healthy': True, 'message': 'Connected'}
+        return {"healthy": True, "message": "Connected"}
     except Exception as e:
-        return {'healthy': False, 'message': str(e)[:100]}
+        return {"healthy": False, "message": str(e)[:100]}
 
 
 # For backward compatibility - don't auto-connect on import

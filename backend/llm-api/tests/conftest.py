@@ -19,13 +19,14 @@ os.environ["LEGACY_AUTH_ENABLED"] = "true"
 os.environ["ALLOWED_HOSTS"] = "testserver,localhost,127.0.0.1"
 os.environ["DATABASE_URL"] = "sqlite:///./test_sabhya.db"
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 # ============================================================================
 # DATABASE FIXTURES
 # ============================================================================
+
 
 @pytest.fixture
 def mock_db():
@@ -42,13 +43,16 @@ def mock_db():
 # HTTP CLIENT FIXTURES
 # ============================================================================
 
+
 @pytest.fixture
 def test_client():
     """Create FastAPI test client with DB tables initialized."""
     try:
         from fastapi.testclient import TestClient
-        from app.main import app
+
         from app.database import init_db
+        from app.main import app
+
         # Ensure all tables (including audit_logs_v2) are created
         init_db()
         return TestClient(app)
@@ -60,10 +64,12 @@ def test_client():
 # AUTH FIXTURES
 # ============================================================================
 
+
 @pytest.fixture
 def admin_token():
     """Generate admin JWT token for testing."""
     from app.auth.security import create_access_token
+
     return create_access_token("admin-user", ["admin"])
 
 
@@ -71,6 +77,7 @@ def admin_token():
 def user_token():
     """Generate regular user JWT token for testing."""
     from app.auth.security import create_access_token
+
     return create_access_token("regular-user", ["user"])
 
 
@@ -78,6 +85,7 @@ def user_token():
 def viewer_token():
     """Generate viewer JWT token for testing."""
     from app.auth.security import create_access_token
+
     return create_access_token("viewer-user", ["viewer"])
 
 
@@ -85,10 +93,12 @@ def viewer_token():
 # SERVICE FIXTURES
 # ============================================================================
 
+
 @pytest.fixture
 def pii_service():
     """Create PII detection service instance."""
     from app.services.pii_detection import PIIDetectionService
+
     return PIIDetectionService()
 
 
@@ -96,12 +106,14 @@ def pii_service():
 def audit_service():
     """Create audit service instance."""
     from app.services.audit import AuditService
+
     return AuditService(hmac_secret=b"test-secret-key-for-testing")
 
 
 # ============================================================================
 # MOCK FIXTURES
 # ============================================================================
+
 
 @pytest.fixture
 def mock_redis():
@@ -124,8 +136,8 @@ def mock_ollama():
             json=lambda: {
                 "model": "mistral:7b-instruct-q4_K_M",
                 "response": "Test response from Ollama",
-                "done": True
-            }
+                "done": True,
+            },
         )
         yield mock
 
@@ -134,16 +146,17 @@ def mock_ollama():
 # HELPERS
 # ============================================================================
 
+
 def create_test_request(
     method: str = "POST",
     path: str = "/v1/chat/completions",
     headers: dict = None,
-    json_body: dict = None
+    json_body: dict = None,
 ):
     """Helper to create test request objects."""
     return {
         "method": method,
         "path": path,
         "headers": headers or {},
-        "json": json_body or {}
+        "json": json_body or {},
     }

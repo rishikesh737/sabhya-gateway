@@ -23,7 +23,7 @@ You are an intelligent system that THINKS before speaking.
 3. CLOSE your thinking with `</thought>`.
 4. ONLY THEN provide your final response to the user.
 
-CRITICAL: content inside `<thought>...</thought>` is HIDDEN from the user. 
+CRITICAL: content inside `<thought>...</thought>` is HIDDEN from the user.
 Content OUTSIDE is what they see. Do not leak internal reasoning into the final response.
 
 Example:
@@ -39,9 +39,9 @@ Here is the answer to your question...
 # Template for RAG Context Injection
 RAG_TEMPLATE = """
 CONTEXT INFORMATION:
-The following context is retrieved from the user's secure knowledge base. 
-Use this context to answer the user's question. 
-If the answer is NOT in the context, you MUST reply: "I cannot find this information in the provided documents." 
+The following context is retrieved from the user's secure knowledge base.
+Use this context to answer the user's question.
+If the answer is NOT in the context, you MUST reply: "I cannot find this information in the provided documents."
 Do NOT use your general knowledge. Do NOT make up names or numbers.
 
 ---
@@ -51,20 +51,25 @@ Do NOT use your general knowledge. Do NOT make up names or numbers.
 {context_note}
 """
 
-def build_system_prompt(context_docs: list = None, context_note: str = "", use_cot: bool = True) -> str:
+
+def build_system_prompt(
+    context_docs: list = None, context_note: str = "", use_cot: bool = True
+) -> str:
     """Builds the final system prompt dynamically."""
     prompt = BASE_SYSTEM_PROMPT
-    
+
     # Add RAG context if present
     if context_docs:
         context_text = "\n\n".join(context_docs)
-        prompt += RAG_TEMPLATE.format(context_docs=context_text, context_note=context_note)
+        prompt += RAG_TEMPLATE.format(
+            context_docs=context_text, context_note=context_note
+        )
     elif context_note:
-         # Context note might exist even without docs (e.g. "User uploaded file X")
+        # Context note might exist even without docs (e.g. "User uploaded file X")
         prompt += f"\nCONTEXT NOTE:\n{context_note}\n"
-    
+
     # Add Chain of Thought instructions for complex tasks
     if use_cot:
         prompt += COT_INSTRUCTIONS
-        
+
     return prompt
