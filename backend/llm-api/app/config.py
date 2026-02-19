@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     # AUDIT
     # =========================================================================
     AUDIT_LOG_RETENTION_DAYS: int = 90
-    AUDIT_HMAC_SECRET: str = "audit-secret-change-in-production-minimum-32-chars"
+    AUDIT_HMAC_SECRET: str
 
     # =========================================================================
     # MONITORING (Optional)
