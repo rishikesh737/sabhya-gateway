@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     # =========================================================================
     # DATABASE
     # =========================================================================
-    DATABASE_URL: str = "postgresql://sabhya:dev-secret@localhost:5432/sabhya_db"
+    DATABASE_URL: str
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 40
 
@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # =========================================================================
     # AUTHENTICATION
     # =========================================================================
-    SECRET_KEY: str = "dev-secret-key-change-in-production-minimum-32-chars"
+    SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7

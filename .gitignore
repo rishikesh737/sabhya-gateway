@@ -40,3 +40,4 @@
 
 # Kubernetes secrets (if any remain)
 infra/k8s/secrets.yaml
+.bfg-report/

@@ -1,12 +1,11 @@
-from logging.config import fileConfig
-
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
-from alembic import context
 import os
 import sys
+from logging.config import fileConfig
+
 from dotenv import load_dotenv
+from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 # Add the project root to the python path
 sys.path.append(os.getcwd())
@@ -25,11 +24,13 @@ if config.config_file_name is not None:
 
 # Set the database URL from environment variable
 # Handle postgresql protocol for updated sqlalchemy versions if needed
-db_url = os.getenv("DATABASE_URL", "postgresql://sabhya:dev-secret@localhost:5432/sabhya_db")
+db_url = os.getenv("DATABASE_URL")
+if db_url is None:
+    raise RuntimeError("DATABASE_URL environment variable is required but not set")
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
 elif db_url.startswith("postgresql://") and "psycopg" not in db_url:
-    # Optional: ensure we use a driver that is installed. 
+    # Optional: ensure we use a driver that is installed.
     # For now, let's stick to what app.database does or just use the raw URL if sqlalchemy supports it.
     # The app code uses postgresql+psycopg but for alembic we might need to be careful.
     # Let's mirror the app logic:
@@ -40,6 +41,7 @@ config.set_main_option("sqlalchemy.url", db_url)
 # add your model's MetaData object here
 # for 'autogenerate' support
 from app.models import Base
+
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
@@ -86,9 +88,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()

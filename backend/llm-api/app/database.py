@@ -19,9 +19,9 @@ log = structlog.get_logger()
 
 # Database URL from environment
 # Note: psycopg (v3) requires "postgresql+psycopg://" scheme
-_raw_url = os.getenv(
-    "DATABASE_URL", "postgresql://sabhya:dev-secret@localhost:5432/sabhya_db"
-)
+_raw_url = os.getenv("DATABASE_URL")
+if _raw_url is None:
+    raise RuntimeError("DATABASE_URL environment variable is required but not set")
 
 # Convert to psycopg3 driver URL if using postgres
 if _raw_url.startswith("postgresql://"):

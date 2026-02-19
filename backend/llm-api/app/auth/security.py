@@ -25,9 +25,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-SECRET_KEY = os.getenv(
-    "SECRET_KEY", "dev-secret-key-change-in-production-minimum-32-chars"
-)
+SECRET_KEY = os.getenv("SECRET_KEY")
+if SECRET_KEY is None:
+    raise RuntimeError("SECRET_KEY environment variable is required but not set")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
